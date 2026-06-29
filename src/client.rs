@@ -1,26 +1,21 @@
-use std::{io::{Read, Write}, net::TcpStream};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 
-pub fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
-    let mut buffer= [0; 512];
+pub fn handle_client(stream: TcpStream) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut stream = stream;
+    let mut line = String::new();
 
-    match stream.read(&mut buffer) {
-        Ok(bytes_read) => {
-            if bytes_read == 0 {
-                println!("Client disconnected");
-            }
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line)?;  // reads until '\n'
 
-
-            println!("Received data from client....{}", String::from_utf8_lossy(&buffer[..bytes_read]));
-
-            if let Err(e) = stream.write_all(b"Hello from server") {
-                eprintln!("Error printing data to the client")
-            } 
+        if bytes_read == 0 {
+            return Ok(()); // client disconnected
         }
 
-        Err(e) => {
-            println!("Error connecting to the server {}", e);
-        }
+        let msg = line.trim_end();          // strip the \r\n
+        println!("Received full line: {}", msg);
+        stream.write_all(&format!("+{}\r\n", msg).into_bytes())?;
     }
-
-    Ok(())
 }
