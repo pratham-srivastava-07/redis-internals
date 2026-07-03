@@ -1,6 +1,9 @@
 use std::net::{TcpListener, SocketAddr};
 mod client;
 use client::handle_client;
+mod resp;
+pub mod helpers;
+
 
 
 fn main() -> std::io::Result<()> {
@@ -13,7 +16,10 @@ fn main() -> std::io::Result<()> {
 
     for stream in listener.incoming() {
         let stream = match stream {
-            Ok(s) => s,
+            Ok(s) => {
+                println!("{:?}", &s);
+                s
+            },
             Err(e) => {
                 eprintln!("Failed to accept connection: {}", e);
                 continue;
