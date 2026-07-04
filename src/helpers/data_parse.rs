@@ -1,6 +1,6 @@
 // all the decode_data_type helpers live here 
 
-use crate::helpers::utils::{DecodeError, read_length};
+use crate::helpers::utils::{DecodeError, decode_one, read_length};
 
 pub fn decode_simple_string(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), DecodeError> {
     let mut pos = 1; 
@@ -56,7 +56,22 @@ pub fn decode_integer(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), De
 }
 
 pub fn decode_arrays(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), DecodeError> {
-    Ok((Box::new(42u32), 0))
+    let mut pos = 1;
+
+    let (count, delta) = read_length(&data[pos..])?;
+
+    pos += delta;
+
+    let mut elements: Vec<Box<dyn std::any::Any>> = Vec::new();
+    // elements.concat()
+
+    for _ in 0..count {
+        let (value, consumed) = decode_one(&data[pos..])?;
+        elements.push(value);
+        pos += consumed;
+    }
+
+    Ok((Box::new(elements), pos))
 }
 
 pub fn decode_errors(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), DecodeError> {
