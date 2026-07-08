@@ -1,9 +1,12 @@
 use std::net::{TcpListener, SocketAddr};
-mod client;
-use client::handle_client;
 mod resp;
 pub mod helpers;
 
+mod cmd;
+mod sync_tcp;
+mod commands;
+
+use crate::sync_tcp::{read_command, respond};
 
 
 fn main() -> std::io::Result<()> {
@@ -29,16 +32,17 @@ fn main() -> std::io::Result<()> {
         let peer = stream.peer_addr().ok();
         println!("Client connected  {:?}. Active clients: {}", peer, client_num);
 
-        if let Err(e) = handle_client(stream) {
-            eprintln!("Error {}", e);
+        loop {
+            match read_command(stream.try_clone()?) {
+                Ok(cmd) => respond(cmd, &stream),
+                Err(_) => break, // client disconnected or sent garbage
+            }
         }
 
-        println!("Client disconnected {:?}", peer);
+        stream.shutdown(std::net::Shutdown::Both).ok();
         client_num -= 1;
-        
+        println!("Client disconnected {:?}", peer);
     }
 
     Ok(())
 }
-
-

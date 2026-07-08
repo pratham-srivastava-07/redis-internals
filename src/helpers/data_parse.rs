@@ -23,9 +23,12 @@ pub fn decode_bulk_string(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize)
 
     let (len, delta) = read_length(&data[pos..])?;
 
-    pos += delta;
-
+    pos += delta + 2; 
     let end = pos + len;
+
+    if end + 2 > data.len() {
+        return Err(DecodeError); 
+    }
 
     let s = String::from_utf8_lossy(&data[pos..end]).to_string();
 
@@ -60,7 +63,7 @@ pub fn decode_arrays(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), Dec
 
     let (count, delta) = read_length(&data[pos..])?;
 
-    pos += delta;
+    pos += delta + 2; 
 
     let mut elements: Vec<Box<dyn std::any::Any>> = Vec::new();
     // elements.concat()

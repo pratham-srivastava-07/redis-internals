@@ -16,6 +16,7 @@ pub fn handle_client(stream: TcpStream) -> std::io::Result<()> {
 
         let msg = line.trim_end();          // strip the \r\n
         println!("Received full line: {}", msg);
-        stream.write_all(&format!("+{}\r\n", msg).into_bytes())?;
+        stream.write_all(&format!("+{}\r\n", msg).as_bytes())?;
+        // stream.try_clone()
     }
 }
