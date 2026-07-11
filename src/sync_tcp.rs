@@ -2,7 +2,7 @@ use std::{io::{Read, Write}, net::TcpStream};
 
 use crate::{cmd::RedisCmd, commands::eval_ping, helpers::{utils::DecodeError}, resp::decode_array_string};
 
-pub fn read_command(mut con: TcpStream) -> Result<RedisCmd, DecodeError> {
+pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, DecodeError> {
     let mut buffer = [0u8; 512];
 
     let n = match con.read(&mut buffer) {
@@ -24,7 +24,7 @@ pub fn read_command(mut con: TcpStream) -> Result<RedisCmd, DecodeError> {
 }
 
 
-pub fn respond(cmd: RedisCmd, stream: &TcpStream) {
+pub fn respond<S: Write>(cmd: RedisCmd, stream: &mut S) {
     let val = eval_and_respond(cmd, stream);
 
     if val.is_err() {
@@ -32,11 +32,11 @@ pub fn respond(cmd: RedisCmd, stream: &TcpStream) {
     }
 }
 
-fn respond_error(err: &str, mut stream: &TcpStream) {
+fn respond_error<S: Write>(err: &str, stream: &mut S) {
     let _ = stream.write_all(format!("-{}\r\n", err).as_bytes());
 }
 
-fn eval_and_respond(cmd: RedisCmd, mut stream: &TcpStream) -> std::io::Result<()> {
+fn eval_and_respond<S: Write>(cmd: RedisCmd,stream: &mut S) -> std::io::Result<()> {
     match cmd.cmd.to_uppercase().as_str() {
         "PING" => eval_ping(cmd.args, stream),
         _ => stream.write_all(b"-ERR unknown command\r\n"),

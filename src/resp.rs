@@ -29,7 +29,7 @@ pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, DecodeError> {
             Some(s) => tokens.push(s.clone()),
             None => return Err(DecodeError)
         }
-    }
+    };
 
     Ok(tokens)
 
