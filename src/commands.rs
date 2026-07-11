@@ -2,7 +2,7 @@ use std::any::Any;
 use std::io::Write;
 use std::net::TcpStream;
 
-pub fn eval_ping(args: Vec<String>, mut stream: &TcpStream) -> std::io::Result<()> {
+pub fn eval_ping<S: Write>(args: Vec<String>, stream: &mut S) -> std::io::Result<()> {
     if args.len() >= 2 {
         return stream.write_all(b"-ERR wrong number of arguments for 'ping' command\r\n");
     }
