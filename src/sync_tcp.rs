@@ -1,4 +1,4 @@
-use std::{io::{Read, Write, ErrorKind, Error}};
+use std::{io::{Read, Write, ErrorKind}};
 
 
 use crate::{cmd::RedisCmd, commands::eval_ping, resp::decode_array_string};
