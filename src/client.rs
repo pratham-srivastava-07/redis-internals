@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 
-pub fn handle_client(stream: TcpStream) -> std::io::Result<()> {
+pub fn _handle_client(stream: TcpStream) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut stream = stream;
     let mut line = String::new();

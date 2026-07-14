@@ -1,19 +1,29 @@
-use std::{io::{Read, Write}, net::TcpStream};
+use std::{io::{Read, Write, ErrorKind, Error}};
 
-use crate::{cmd::RedisCmd, commands::eval_ping, helpers::{utils::DecodeError}, resp::decode_array_string};
 
-pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, DecodeError> {
+use crate::{cmd::RedisCmd, commands::eval_ping, resp::decode_array_string};
+
+#[derive(Debug)]
+pub enum ReadError {
+    WouldBlock,
+    Disconnected,
+    Decode
+}
+
+pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, ReadError> {
     let mut buffer = [0u8; 512];
 
     let n = match con.read(&mut buffer) {
+        Ok(0) => return Err(ReadError::Disconnected),
         Ok(n) => n,
-        Err(_) => return Err(DecodeError)
+        Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Err(ReadError::WouldBlock),
+        Err(_) => return Err(ReadError::Disconnected)
     };
 
-    let tokens = decode_array_string(&buffer[..n])?;
+    let tokens = decode_array_string(&buffer[..n]).map_err(|_| ReadError::Decode)?;
 
     if tokens.is_empty() {
-        return Err(DecodeError);
+        return Err(ReadError::Decode);
     }
 
     Ok(RedisCmd {
