@@ -1,7 +1,7 @@
 use crate::helpers::utils::{DecodeError, decode_one};
 
 #[warn(dead_code)]
-pub fn decode_data(data: &[u8]) -> Result<Box<dyn std::any::Any>, DecodeError> {
+pub fn _decode_data(data: &[u8]) -> Result<Box<dyn std::any::Any>, DecodeError> {
     // Ok(Box::new(42u32))
 
     if data.is_empty() {
