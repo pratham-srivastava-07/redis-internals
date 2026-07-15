@@ -1,5 +1,8 @@
 use std::any::Any;
-use std::io::Write;
+use std::collections::HashMap;
+use std::io::{Error, Write};
+
+use crate::cmd::RedisValue;
 
 
 pub fn eval_ping<S: Write>(args: Vec<String>, stream: &mut S) -> std::io::Result<()> {
@@ -36,3 +39,32 @@ fn encode_string(s: &str, is_simple: bool) -> Vec<u8> {
         format!("${}\r\n{}\r\n", s.len(), s).into_bytes()
     }
 }
+
+
+// SET, GET  && TTL
+pub fn _set_command<S: Write>(args: Vec<String>, _stream: S) -> std::io::Result<()>  {
+    // in memory data 
+    let mut data: HashMap<String, RedisValue> = HashMap::new();
+
+    if args.is_empty() {
+        return Err(Error::new(std::io::ErrorKind::InvalidInput, "is empty"));
+    }
+
+    if args.len() < 3 {
+        return Err(Error::new(
+            std::io::ErrorKind::Unsupported, "at least three args required"
+        ));
+    }
+
+    if args[0] != "SET" {
+        return Err(Error::new(std::io::ErrorKind::InvalidData, "First arg should be SET"));
+    }
+
+    let key = &args[1];
+    let value = &args[2];
+
+    data.insert(key.clone(), RedisValue::String(value.clone()));
+
+    Ok(())
+} 
+
