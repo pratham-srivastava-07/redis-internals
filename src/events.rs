@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
+use crate::cmd::RedisValue;
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::sync_tcp::{read_command, respond, ReadError};
 
@@ -29,6 +30,9 @@ pub fn run_event_loop()-> std::io::Result<()> {
     let mut clients: HashMap<Token, TcpStream> = HashMap::new();
 
     let mut next_token = 1;
+
+    // hashmap for storing everything and getting everything for that particular session
+    let mut store: HashMap<String, RedisValue> = HashMap::new();
 
     println!("Reached before entering the loop");
 
@@ -64,7 +68,7 @@ pub fn run_event_loop()-> std::io::Result<()> {
                         // read_command 
                         loop {
                             match read_command(&mut stream) {
-                                Ok(cmd) => respond(cmd, &mut stream),
+                                Ok(cmd) => respond(cmd, &mut store, &mut stream),
 
                                 Err(ReadError::WouldBlock) => {
                                     break;
