@@ -1,7 +1,7 @@
-use std::{io::{Read, Write, ErrorKind}};
+use std::{collections::HashMap, io::{ErrorKind, Read, Write}};
 
 
-use crate::{cmd::RedisCmd, commands::eval_ping, resp::decode_array_string};
+use crate::{cmd::{RedisCmd, RedisValue}, commands::{eval_ping, get_command, set_command}, resp::decode_array_string};
 
 #[derive(Debug)]
 pub enum ReadError {
@@ -34,8 +34,8 @@ pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, ReadError> {
 }
 
 
-pub fn respond<S: Write>(cmd: RedisCmd, stream: &mut S) {
-    let val = eval_and_respond(cmd, stream);
+pub fn respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, RedisValue>, stream: &mut S) {
+    let val = eval_and_respond(cmd, store,  stream);
 
     if val.is_err() {
         respond_error("Error", stream)
@@ -46,9 +46,11 @@ fn respond_error<S: Write>(err: &str, stream: &mut S) {
     let _ = stream.write_all(format!("-{}\r\n", err).as_bytes());
 }
 
-fn eval_and_respond<S: Write>(cmd: RedisCmd,stream: &mut S) -> std::io::Result<()> {
+fn eval_and_respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, RedisValue>, stream: &mut S) -> std::io::Result<()> {
     match cmd.cmd.to_uppercase().as_str() {
         "PING" => eval_ping(cmd.args, stream),
+        "SET" => set_command(cmd.args, store, stream),
+        "GET" => get_command(cmd.args, store, stream),
         _ => stream.write_all(b"-ERR unknown command\r\n"),
     }
 }

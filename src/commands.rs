@@ -42,29 +42,40 @@ fn encode_string(s: &str, is_simple: bool) -> Vec<u8> {
 
 
 // SET, GET  && TTL
-pub fn _set_command<S: Write>(args: Vec<String>, _stream: S) -> std::io::Result<()>  {
+pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, RedisValue>, stream: &mut S) -> std::io::Result<()>  {
     // in memory data 
-    let mut data: HashMap<String, RedisValue> = HashMap::new();
+    // let mut data: HashMap<String, RedisValue> = HashMap::new();
 
     if args.is_empty() {
         return Err(Error::new(std::io::ErrorKind::InvalidInput, "is empty"));
     }
 
-    if args.len() < 3 {
-        return Err(Error::new(
-            std::io::ErrorKind::Unsupported, "at least three args required"
-        ));
+    let key = &args[0];
+    let value = &args[1];
+
+    store.insert(key.clone(), RedisValue::String(value.clone()));
+
+    stream.write_all(b"+OK\r\n")
+}
+
+pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, RedisValue>, stream: &mut S) -> std::io::Result<()> {
+    if args.is_empty() {
+        return stream.write_all(b"-ERR wrong number of arguments for 'get' command\r\n");
     }
 
-    if args[0] != "SET" {
-        return Err(Error::new(std::io::ErrorKind::InvalidData, "First arg should be SET"));
+    let key = &args[0];
+
+    match store.get(key) {
+        Some(RedisValue::String(val)) => {
+            let reply = format!("${}\r\n{}\r\n", val.len(), val);
+            stream.write_all(reply.as_bytes())
+        }
+        Some(_) => {
+            stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+        }
+        None => {
+            stream.write_all(b"-1\r\n")
+        }
     }
-
-    let key = &args[1];
-    let value = &args[2];
-
-    data.insert(key.clone(), RedisValue::String(value.clone()));
-
-    Ok(())
-} 
+}
 
