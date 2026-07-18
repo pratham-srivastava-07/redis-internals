@@ -50,6 +50,10 @@ pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Redi
         return Err(Error::new(std::io::ErrorKind::InvalidInput, "is empty"));
     }
 
+    if args.len() < 2 {
+        return stream.write_all(b"-ERR wrong number of arguments for 'set' command\r\n");
+    }
+
     let key = &args[0];
     let value = &args[1];
 
@@ -74,8 +78,11 @@ pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Redi
             stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
         }
         None => {
-            stream.write_all(b"-1\r\n")
+            stream.write_all(b"$-1\r\n")
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
