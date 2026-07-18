@@ -10,19 +10,16 @@ const SERVER: Token = Token(0);
 
 
 pub fn run_event_loop()-> std::io::Result<()> {
-    println!("Inside run event loop");
-    let (port, host) = port_and_host();
+    let (_port, _host) = port_and_host();
     let addrr = get_socket_address();
-
-    println!("Running async TCP server on port {:?} and host {:?}", port, host);
 
     let max_clients = 20000;
     let mut events = Events::with_capacity(max_clients);
-    println!("GOT EVENTS {:?}", events);
+
     let mut listener= mio::net::TcpListener::bind(addrr)?;
-    println!("LISTENER {:?}", listener);
+
     let mut poll = Poll::new()?;
-    println!("POLLL {:?}", poll);
+
 
     // register the listener
     poll.registry().register(&mut listener, SERVER, Interest::READABLE)?;
@@ -34,12 +31,9 @@ pub fn run_event_loop()-> std::io::Result<()> {
     // hashmap for storing everything and getting everything for that particular session
     let mut store: HashMap<String, RedisValue> = HashMap::new();
 
-    println!("Reached before entering the loop");
 
     loop {
         poll.poll(&mut events, None)?;
-        println!("Inside loop");
-        // println!("{:?}", poll.poll(&mut events, None)?);
 
         for event in events.iter() {
             match event.token() {
@@ -51,7 +45,6 @@ pub fn run_event_loop()-> std::io::Result<()> {
                                 next_token += 1;
                                 poll.registry().register(&mut stream, token, Interest::READABLE)?;
                                 clients.insert(token, stream);
-                                println!("client connected");
                             },
                             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {break},
                             Err(e) => return Err(e)
@@ -63,8 +56,6 @@ pub fn run_event_loop()-> std::io::Result<()> {
                 token => {
                     if let Some(mut stream) = clients.get_mut(&token) {
                         let mut closed = false;
-                        println!("Reached here");
-                        println!("{:?}", token);
                         // read_command 
                         loop {
                             match read_command(&mut stream) {
