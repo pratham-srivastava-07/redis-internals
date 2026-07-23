@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
-use crate::cmd::RedisValue;
+use crate::cmd::{Entry, RedisValue};
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::sync_tcp::{read_command, respond, ReadError};
 
@@ -25,11 +25,12 @@ pub fn run_event_loop()-> std::io::Result<()> {
     poll.registry().register(&mut listener, SERVER, Interest::READABLE)?;
 
     let mut clients: HashMap<Token, TcpStream> = HashMap::new();
+    // let mut store = 
 
     let mut next_token = 1;
 
     // hashmap for storing everything and getting everything for that particular session
-    let mut store: HashMap<String, RedisValue> = HashMap::new();
+    let mut store: HashMap<String, Entry> = HashMap::new();
 
 
     loop {

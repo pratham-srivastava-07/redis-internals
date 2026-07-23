@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, time::Instant};
 
 pub struct RedisCmd {
     pub cmd: String,
@@ -7,7 +7,12 @@ pub struct RedisCmd {
 
 pub enum RedisValue {
     String(String),
-    List(Vec<String>),
-    Set(HashSet<String>),
-    Hash(HashMap<String, String>),
+    _List(Vec<String>),
+    _Set(HashSet<String>),
+    _Hash(HashMap<String, String>),
+}
+
+pub struct Entry {
+    pub value: RedisValue,
+    pub expires_at: Option<Instant>
 }

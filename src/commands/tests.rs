@@ -1,6 +1,4 @@
 use super::*;                       
-use std::collections::HashMap;
-use crate::cmd::RedisValue;
 
 #[test]
 fn ping_replies_pong() {
