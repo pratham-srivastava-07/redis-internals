@@ -122,6 +122,40 @@ pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entr
     }
 }
 
+pub fn set_ttl<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    if args.is_empty() {
+        return stream.write_all(b"-ERR wrong number of arguments for 'ttl' command\r\n");
+    }
+
+    // println!("args: {:?}", args);
+
+    let key = &args[0];
+
+    let expired = match store.get(key) {
+        Some(n) => matches!(n.expires_at, Some(m) if Instant::now() >= m),
+        None => false
+    };
+
+    if expired {
+        store.remove(key);
+    }
+
+    let reply: i64 = match store.get(key) {
+        None => -2,
+        Some(entry) => match entry.expires_at {
+            None => -1,
+            Some(exp) => {
+                exp.saturating_duration_since(Instant::now()).as_secs() as i64 
+            }
+        }
+    };
+
+    // println!("{:?}", type_name_of_val(&expired));
+    stream.write_all(format!(":{}\r\n", reply).as_bytes())
+
+
+}
+
 #[cfg(test)]
 mod tests;
 

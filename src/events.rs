@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
-use crate::cmd::{Entry, RedisValue};
+use crate::cmd::{Entry};
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::sync_tcp::{read_command, respond, ReadError};
 
