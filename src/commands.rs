@@ -1,8 +1,9 @@
-use std::any::Any;
+use std::any::{Any};
 use std::collections::HashMap;
 use std::io::{Error, Write};
+use std::time::{Duration, Instant};
 
-use crate::cmd::RedisValue;
+use crate::cmd::{Entry, RedisValue};
 
 
 pub fn eval_ping<S: Write>(args: Vec<String>, stream: &mut S) -> std::io::Result<()> {
@@ -42,7 +43,7 @@ fn encode_string(s: &str, is_simple: bool) -> Vec<u8> {
 
 
 // SET, GET  && TTL
-pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, RedisValue>, stream: &mut S) -> std::io::Result<()>  {
+pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()>  {
     // in memory data 
     // let mut data: HashMap<String, RedisValue> = HashMap::new();
 
@@ -53,33 +54,71 @@ pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Redi
     if args.len() < 2 {
         return stream.write_all(b"-ERR wrong number of arguments for 'set' command\r\n");
     }
+    // OLD IMPL 
+    
+    // if let Some(arg) = args.get(2) {
+    //     println!("{:?}", arg);
+    //     let extract_time: u64 = match *&args[3].parse::<u64>() {
+    //         Ok(n) =>  n,
+    //         Err(_) => return Err(Error::new(std::io::ErrorKind::InvalidInput, "ERR value is not an integer or out of range"))
+    //     };
+
+    //     println!("{:?}", extract_time);
+    // }
 
     let key = &args[0];
     let value = &args[1];
 
-    store.insert(key.clone(), RedisValue::String(value.clone()));
+    let expires_at = match args.get(2) {
+        Some(opt) => {
+            let num: u64 = match args.get(3).and_then(|s| s.parse::<u64>().ok()) {
+                Some(n) => n,
+                None => return stream.write_all(b"-ERR value is not an integer or out of range\r\n")
+            };
+            match opt.to_uppercase().as_str() {
+                "EX" => Some(Instant::now() + Duration::from_secs(num)),
+                "PX" => Some(Instant::now() + Duration::from_millis(num)),
+                _ => return stream.write_all(b"-ERR syntax error\r\n")
+            }
+        }
+
+        None => None,
+    };
+
+    store.insert(key.to_string(), Entry {
+        value: RedisValue::String(value.to_string()),
+        expires_at
+    });
 
     stream.write_all(b"+OK\r\n")
 }
 
-pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, RedisValue>, stream: &mut S) -> std::io::Result<()> {
+pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
     if args.is_empty() {
         return stream.write_all(b"-ERR wrong number of arguments for 'get' command\r\n");
     }
 
     let key = &args[0];
 
+    let expiration = match store.get(key) {
+        Some(entry) => matches!(entry.expires_at, Some(exp) if Instant::now() >= exp),
+        None => false
+    };
+
+    if expiration {
+        store.remove(key);
+    }
+
     match store.get(key) {
-        Some(RedisValue::String(val)) => {
-            let reply = format!("${}\r\n{}\r\n", val.len(), val);
-            stream.write_all(reply.as_bytes())
+        Some(entry) => match &entry.value {
+            RedisValue::String(val) => {
+                let reply = format!("${}\r\n{}\r\n", val.len(), val);
+                stream.write_all(reply.as_bytes())
+            }
+            _ => stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
         }
-        Some(_) => {
-            stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
-        }
-        None => {
-            stream.write_all(b"$-1\r\n")
-        }
+
+        None => stream.write_all(b"$-1\r\n")
     }
 }
 
