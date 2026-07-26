@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::{ErrorKind, Read, Write}};
 
 
-use crate::{cmd::{Entry, RedisCmd}, commands::{eval_ping, get_command, set_command, set_ttl}, resp::decode_array_string};
+use crate::{cmd::{Entry, RedisCmd}, commands::{delete_keys, eval_ping, expire_command, get_command, set_command, set_ttl}, resp::decode_array_string};
 
 #[derive(Debug)]
 pub enum ReadError {
@@ -52,6 +52,8 @@ fn eval_and_respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>,
         "SET" => set_command(cmd.args, store, stream),
         "GET" => get_command(cmd.args, store, stream),
         "TTL" => set_ttl(cmd.args, store, stream),
+        "DEL" => delete_keys(cmd.args, store, stream),
+        "EXPIRE" => expire_command(cmd.args, store, stream),
         _ => stream.write_all(b"-ERR unknown command\r\n"),
     }
 }

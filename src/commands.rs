@@ -156,6 +156,56 @@ pub fn set_ttl<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, 
 
 }
 
+pub fn delete_keys<S: Write>(key_args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    if key_args.is_empty() {
+        return stream.write_all(b"-ERR wrong number of arguments for 'del' command\r\n");
+    }
+    let mut count = 0;
+    // if key exists, delete the key and return the number of keys deleted, only return number of keys deleted regaurdless of how many keys are provided 
+    for key in key_args {
+        if store.contains_key(&key) {
+            store.remove(&key.to_string());
+            count += 1;
+        } else {
+            //
+        }
+    }
+    // if key does not exist, return 0
+
+    stream.write_all(format!(":{}\r\n", count).as_bytes())
+}
+
+pub fn expire_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    if args.is_empty() {
+        return stream.write_all(b"-ERR wrong number of arguments for 'del' command\r\n");
+    }
+
+    if args.len() < 2 {
+        return stream.write_all(b"ERR wrong number of arguments for 'expire' command\r\n");
+    }
+
+    let key = &args[0];
+    // let ttl_in_secs = &args[1];
+
+    let secs = match args[1].parse::<u64>() {
+        Ok(n) => n,
+        Err(_) => return stream.write_all(b"-ERR value is not an integer or out of range\r\n"),
+    };
+
+    // check if key exists in store
+    if !store.contains_key(&key.to_string()) {
+        return stream.write_all(b"ERR key does not exist\r\n");
+    }
+    // if the command is able to set an expiration, it returns 1 (true)
+    match store.get_mut(key) {
+        Some(entry) => {
+            entry.expires_at = Some(Instant::now() + Duration::from_secs(secs));
+            stream.write_all(b":1\r\n")
+        }
+        None => stream.write_all(b":0\r\n"),
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
