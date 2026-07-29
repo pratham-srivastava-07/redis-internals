@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
+use std::time::{Duration, Instant};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
 use crate::cmd::{Entry};
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::sync_tcp::{read_command, respond, ReadError};
+use crate::eviction::evict_keys;
 
 const SERVER: Token = Token(0);
 
@@ -31,7 +33,8 @@ pub fn run_event_loop()-> std::io::Result<()> {
 
     // hashmap for storing everything and getting everything for that particular session
     let mut store: HashMap<String, Entry> = HashMap::new();
-
+    
+    let mut last_sweep = Instant::now();
 
     loop {
         poll.poll(&mut events, None)?;
@@ -84,8 +87,13 @@ pub fn run_event_loop()-> std::io::Result<()> {
                         }
                         // execute and 
                     }
-                }
+                }, 
             }
+        }
+
+        if last_sweep.elapsed() >= Duration::from_millis(100) {
+            evict_keys(&mut store);
+            last_sweep = Instant::now();
         }
     }
 }
