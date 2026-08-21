@@ -10,7 +10,7 @@ pub fn decode_simple_string(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usiz
     }
 
     if pos >= data.len() {
-        return Err(DecodeError);
+        return Err(DecodeError::Incomplete); // never found the \r
     }
 
     let s = String::from_utf8_lossy(&data[1..pos]).to_string();
@@ -27,7 +27,7 @@ pub fn decode_bulk_string(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize)
     let end = pos + len;
 
     if end + 2 > data.len() {
-        return Err(DecodeError); 
+        return Err(DecodeError::Incomplete); // payload not fully arrived yet
     }
 
     let s = String::from_utf8_lossy(&data[pos..end]).to_string();
@@ -46,12 +46,12 @@ pub fn decode_integer(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), De
     }
 
     if pos >= data.len() {
-        return Err(DecodeError);
+        return Err(DecodeError::Incomplete);
     }
 
     let i: u64 = match String::from_utf8_lossy(&data[1..pos]).parse() {
         Ok(n) => n,
-        Err(_) => return Err(DecodeError),
+        Err(_) => return Err(DecodeError::Invalid), // non-numeric junk
     };
 
     return Ok((Box::new(i), pos+2));

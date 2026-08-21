@@ -1,11 +1,14 @@
 use crate::helpers::data_parse::{decode_arrays, decode_bulk_string, decode_errors, decode_integer, decode_simple_string};
 
 #[derive(Debug)]
-pub struct DecodeError;
+pub enum DecodeError {
+    Incomplete, // ran out of bytes mid-frame -> wait for more data
+    Invalid,    // bytes are here but they're not valid RESP -> protocol error
+}
 
 pub fn decode_one(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), DecodeError> {
     if data.is_empty() {
-        return Err(DecodeError);
+        return Err(DecodeError::Incomplete);
     }
     let first_special_char = data[0];
 
@@ -15,7 +18,7 @@ pub fn decode_one(data: &[u8]) -> Result<(Box<dyn std::any::Any>, usize), Decode
        b'$' => decode_bulk_string(data),
        b'*' => decode_arrays(data),
        b'-' => decode_errors(data),
-       _ => Err(DecodeError)
+       _ => Err(DecodeError::Invalid)
     }
 }
 
@@ -34,6 +37,5 @@ pub fn read_length(data: &[u8]) -> Result<(usize, usize), DecodeError> {
         pos += 1;
     }
 
-    Err(DecodeError)
-    
+    Err(DecodeError::Incomplete) // hit the end before the CRLF -> need more
 }

@@ -15,4 +15,9 @@ pub enum RedisValue {
 pub struct Entry {
     pub value: RedisValue,
     pub expires_at: Option<Instant>
-} 
+}
+
+
+pub struct RedisCmds {
+    pub cmds: Vec<RedisCmd>
+}

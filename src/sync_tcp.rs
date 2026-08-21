@@ -20,7 +20,7 @@ pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, ReadError> {
         Err(_) => return Err(ReadError::Disconnected)
     };
 
-    let tokens = decode_array_string(&buffer[..n]).map_err(|_| ReadError::Decode)?;
+    let (tokens, _consumed) = decode_array_string(&buffer[..n]).map_err(|_| ReadError::Decode)?;
 
     if tokens.is_empty() {
         return Err(ReadError::Decode);

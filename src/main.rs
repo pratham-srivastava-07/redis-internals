@@ -6,6 +6,7 @@ mod sync_tcp;
 mod commands;
 mod events;
 mod eviction;
+mod pipeline;
 
 use crate::{events::run_event_loop};
 
