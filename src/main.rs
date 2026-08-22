@@ -7,6 +7,7 @@ mod commands;
 mod events;
 mod eviction;
 mod pipeline;
+mod aof;
 
 use crate::{events::run_event_loop};
 

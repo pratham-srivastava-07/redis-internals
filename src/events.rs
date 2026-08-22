@@ -3,6 +3,7 @@ use std::io::{ErrorKind, Write};
 use std::time::{Duration, Instant};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
+use crate::aof::{aof_entry, Aof};
 use crate::cmd::{Entry};
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::sync_tcp::respond;
@@ -41,6 +42,10 @@ pub fn run_event_loop()-> std::io::Result<()> {
     // hashmap for storing everything and getting everything for that particular session
     let mut store: HashMap<String, Entry> = HashMap::new();
 
+    // aof state build 
+    Aof::load(&mut store)?;
+    let mut aof = Aof::new()?;
+
     let mut last_sweep = Instant::now();
 
     loop {
@@ -73,9 +78,15 @@ pub fn run_event_loop()-> std::io::Result<()> {
                             Ok(cmds) => {
                                 let mut outbuf: Vec<u8> = Vec::new();
                                 for cmd in cmds {
+                                    let entry = aof_entry(&cmd);
                                     // Vec<u8> is a Write sink, so replies pile up in
                                     // outbuf instead of hitting the socket one by one.
                                     respond(cmd, &mut store, &mut outbuf);
+
+                                    // logging the write, right after applying it
+                                    if let Some(bytes) = entry {
+                                        aof.append(&bytes);
+                                    }
                                 }
                                 if !outbuf.is_empty() {
                                     // one write for the whole pipeline batch
@@ -97,6 +108,7 @@ pub fn run_event_loop()-> std::io::Result<()> {
 
         if last_sweep.elapsed() >= Duration::from_millis(100) {
             evict_keys(&mut store);
+            aof.flush();
             last_sweep = Instant::now();
         }
     }
