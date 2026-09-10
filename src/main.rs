@@ -10,6 +10,8 @@ mod pipeline;
 mod aof;
 mod object;
 mod types_encoding;
+mod config;
+mod stats;
 
 use crate::{events::run_event_loop};
 

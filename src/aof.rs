@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, fs::{File, OpenOptions}, io::{self, Read, Write}};
 
-use crate::{cmd::{Entry, RedisCmd}, helpers::utils::DecodeError, resp::decode_array_string, sync_tcp::respond};
+use crate::{cmd::{Entry, RedisCmd}, helpers::utils::DecodeError, resp::decode_array_string, stats::Stat, sync_tcp::respond};
 
 const AOF_PATH: &str = "appendonly.aof";
 
@@ -43,6 +43,7 @@ impl Aof {
 
         let mut buffer: Vec<u8> = Vec::new();
         let mut offset = 0;
+        let mut stats = Stat::new();
 
 
         file.read_to_end(&mut buffer)?;
@@ -58,7 +59,7 @@ impl Aof {
                         cmd: tokens[0].clone(),
                         args: tokens[1..].to_vec()
                     };
-                    respond(cmd, store, &mut io::sink());
+                    respond(cmd, store, &mut stats,&mut io::sink());
                 }
                 Err(DecodeError::Incomplete) => break,
                 Err(DecodeError::Invalid) => break

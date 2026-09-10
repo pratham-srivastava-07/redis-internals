@@ -1,10 +1,14 @@
 use rand::Rng;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::f32;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use crate::cmd::Entry;
+use crate::commands::delete_keys;
+use crate::config::{EVICTION_RATIO, MAX_KEY_LIMIT};
+use crate::helpers::utils::remove_keys;
 
 const SAMPLE_SIZE: usize = 20;
 const EXPIRED_THRESHOLD: f64 = 0.25;
@@ -181,5 +185,22 @@ impl Lru {
 
         node.borrow_mut().prev = None;
         node.borrow_mut().next = None;
+    }
+}
+
+
+pub fn evict_all_keys(store: &mut HashMap<String, Entry>) {
+    let mut evict_count = (EVICTION_RATIO * MAX_KEY_LIMIT as f64) as i64;
+
+    let keys: Vec<String> = store.keys().cloned().collect();
+    // iteration is entirely random over here 
+    for key in keys {
+        // delete_keys(key_args, store, stream)
+        remove_keys(key.to_string(), store);
+        evict_count-=1;
+
+        if evict_count == 0 {
+            break;
+        }
     }
 }

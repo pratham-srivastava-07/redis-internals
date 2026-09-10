@@ -6,6 +6,7 @@ use mio::net::{TcpStream};
 use crate::aof::{aof_entry, Aof};
 use crate::cmd::{Entry};
 use crate::helpers::port::{get_socket_address, port_and_host};
+use crate::stats::Stat;
 use crate::sync_tcp::respond;
 use crate::pipeline::{fill_box, parse_commands, Fill};
 use crate::eviction::evict_keys;
@@ -46,6 +47,8 @@ pub fn run_event_loop()-> std::io::Result<()> {
     Aof::load(&mut store)?;
     let mut aof = Aof::new()?;
 
+    let mut stats: Stat = Stat::new();
+
     let mut last_sweep = Instant::now();
 
     loop {
@@ -82,7 +85,7 @@ pub fn run_event_loop()-> std::io::Result<()> {
                                     // Vec<u8> is a Write sink, so replies pile up in
                                     // outbuf instead of hitting the socket one by one.
                                     let reply_start = outbuf.len();
-                                    respond(cmd, &mut store, &mut outbuf);
+                                    respond(cmd, &mut store,  &mut stats,&mut outbuf);
 
                                     // logging the write, right after applying it
                                     if outbuf.get(reply_start).is_some_and(|byte| *byte != b'-') {

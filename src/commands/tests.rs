@@ -7,12 +7,12 @@ fn ping_replies_pong() {
     assert_eq!(out, b"+PONG\r\n");
 }
 
-fn run(store: &mut HashMap<String, Entry>, name: &str, args: &[&str]) -> Vec<u8> {
+fn run(store: &mut HashMap<String, Entry>, stats: &mut Stat,  name: &str, args: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
     crate::sync_tcp::respond(crate::cmd::RedisCmd {
         cmd: name.into(),
         args: args.iter().map(|arg| arg.to_string()).collect(),
-    }, store, &mut out);
+    }, store, stats, &mut out);
     out
 }
 

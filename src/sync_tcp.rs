@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::{ErrorKind, Read, Write}};
 
 
-use crate::{cmd::{Entry, RedisCmd}, commands::{delete_keys, eval_ping, expire_command, get_command, set_command, set_ttl}, resp::decode_array_string};
+use crate::{cmd::{Entry, RedisCmd}, commands::{self, delete_keys, eval_ping, expire_command, get_command, set_command, set_ttl}, resp::decode_array_string, stats::Stat};
 
 #[derive(Debug)]
 pub enum ReadError {
@@ -34,8 +34,8 @@ pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, ReadError> {
 }
 
 
-pub fn respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stream: &mut S) {
-    let val = eval_and_respond(cmd, store,  stream);
+pub fn respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stats: &mut Stat,  stream: &mut S) {
+    let val = eval_and_respond(cmd, store, stats,  stream);
 
     if val.is_err() {
         respond_error("Error", stream)
@@ -46,13 +46,14 @@ fn respond_error<S: Write>(err: &str, stream: &mut S) {
     let _ = stream.write_all(format!("-{}\r\n", err).as_bytes());
 }
 
-fn eval_and_respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+fn eval_and_respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stats: &mut Stat, stream: &mut S) -> std::io::Result<()> {
     match cmd.cmd.to_uppercase().as_str() {
         "PING" => eval_ping(cmd.args, stream),
         "SET" => set_command(cmd.args, store, stream),
         "GET" => get_command(cmd.args, store, stream),
         "INCR" => crate::commands::incr_command(cmd.args, store, stream),
         "OBJECT" => crate::commands::object_command(cmd.args, store, stream),
+        "INFO" => commands::eval_info(stats, stream),
         "TTL" => set_ttl(cmd.args, store, stream),
         "DEL" => delete_keys(cmd.args, store, stream),
         "EXPIRE" => expire_command(cmd.args, store, stream),

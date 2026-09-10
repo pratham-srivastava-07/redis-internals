@@ -1,4 +1,6 @@
-use crate::helpers::data_parse::{decode_arrays, decode_bulk_string, decode_errors, decode_integer, decode_simple_string};
+use std::collections::HashMap;
+
+use crate::{cmd::Entry, helpers::data_parse::{decode_arrays, decode_bulk_string, decode_errors, decode_integer, decode_simple_string}};
 
 #[derive(Debug)]
 pub enum DecodeError {
@@ -38,4 +40,8 @@ pub fn read_length(data: &[u8]) -> Result<(usize, usize), DecodeError> {
     }
 
     Err(DecodeError::Incomplete) // hit the end before the CRLF -> need more
+}
+
+pub fn remove_keys(key: String, store: &mut HashMap<String, Entry>) {
+    store.remove(&key.to_string());
 }

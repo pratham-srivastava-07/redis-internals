@@ -4,6 +4,7 @@ use std::io::{Error, Write};
 use std::time::{Duration, Instant};
 
 use crate::cmd::{Entry, RedisValue};
+use crate::stats::Stat;
 use crate::types_encoding::*;
 
 
@@ -272,4 +273,27 @@ pub fn object_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, E
         _ => unreachable!("known string encoding"),
     };
     write_bulk(name, stream)
+}
+
+
+pub fn eval_info<S: Write>(
+    stats: &Stat,
+    stream: &mut S,
+) -> std::io::Result<()> {
+    let mut info = String::new();
+
+    info.push_str("# Keyspace\r\n");
+
+    for (i, stat) in stats.keyspace_stat.iter().enumerate() {
+        if let Some(keys) = stat.get("keys") {
+            info.push_str(
+                &format!(
+                    "db{}:keys={},expires=0,avg_ttl=0\r\n",
+                    i, keys
+                )
+            );
+        }
+    }
+
+    stream.write_all(info.as_bytes())
 }
