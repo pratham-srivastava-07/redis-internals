@@ -4,6 +4,7 @@ use std::io::{Error, Write};
 use std::time::{Duration, Instant};
 
 use crate::cmd::{Entry, RedisValue};
+use crate::types_encoding::*;
 
 
 pub fn eval_ping<S: Write>(args: Vec<String>, stream: &mut S) -> std::io::Result<()> {
@@ -86,7 +87,7 @@ pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entr
     };
 
     store.insert(key.to_string(), Entry {
-        value: RedisValue::String(value.to_string()),
+        value: RedisValue::from_string(value.to_string()),
         expires_at
     });
 
@@ -111,10 +112,9 @@ pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entr
 
     match store.get(key) {
         Some(entry) => match &entry.value {
-            RedisValue::String(val) => {
-                let reply = format!("${}\r\n{}\r\n", val.len(), val);
-                stream.write_all(reply.as_bytes())
-            }
+            RedisValue::Raw(val) => write_bulk(val, stream),
+            RedisValue::EmbStr(val) => write_bulk(val, stream),
+            RedisValue::Int(val) => write_bulk(val.to_string().as_bytes(), stream),
             _ => stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
         }
 
@@ -209,3 +209,67 @@ pub fn expire_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, E
 #[cfg(test)]
 mod tests;
 
+fn write_bulk<S: Write>(value: &[u8], stream: &mut S) -> std::io::Result<()> {
+    write!(stream, "${}\r\n", value.len())?;
+    stream.write_all(value)?;
+    stream.write_all(b"\r\n")
+}
+
+fn remove_expired(key: &str, store: &mut HashMap<String, Entry>) {
+    if store.get(key).is_some_and(|obj| {
+        obj.expires_at.is_some_and(|deadline| Instant::now() >= deadline)
+    }) {
+        store.remove(key);
+    }
+}
+
+pub fn incr_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    if args.len() != 1 {
+        return stream.write_all(b"-ERR wrong number of arguments for 'incr' command\r\n");
+    }
+    let key = &args[0];
+    remove_expired(key, store);
+    let obj = store.entry(key.clone()).or_insert(Entry {
+        value: RedisValue::Int(0),
+        expires_at: None,
+    });
+    if get_type(obj.type_encoding()) != OBJ_TYPE_STRING {
+        return stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+    }
+    let number = match &obj.value {
+        RedisValue::Int(number) => Some(*number),
+        RedisValue::Raw(bytes) => parse_integer(bytes),
+        RedisValue::EmbStr(bytes) => parse_integer(bytes),
+        _ => unreachable!("string type checked above"),
+    };
+    let Some(number) = number else {
+        return stream.write_all(b"-ERR value is not an integer or out of range\r\n");
+    };
+    let Some(next) = number.checked_add(1) else {
+        return stream.write_all(b"-ERR increment or decrement would overflow\r\n");
+    };
+    // Validate before mutation, and preserve the existing expiration.
+    obj.value = RedisValue::Int(next);
+    write!(stream, ":{next}\r\n")
+}
+
+pub fn object_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    if args.len() != 2 || !args[0].eq_ignore_ascii_case("ENCODING") {
+        return stream.write_all(b"-ERR syntax: OBJECT ENCODING key\r\n");
+    }
+    let key = &args[1];
+    remove_expired(key, store);
+    let Some(obj) = store.get(key) else {
+        return stream.write_all(b"$-1\r\n");
+    };
+    if get_type(obj.type_encoding()) != OBJ_TYPE_STRING {
+        return stream.write_all(b"-ERR encoding inspection is only implemented for strings\r\n");
+    }
+    let name: &[u8] = match get_encoding(obj.type_encoding()) {
+        OBJ_ENCODING_RAW => b"raw",
+        OBJ_ENCODING_INT => b"int",
+        OBJ_ENCODING_EMBSTR => b"embstr",
+        _ => unreachable!("known string encoding"),
+    };
+    write_bulk(name, stream)
+}

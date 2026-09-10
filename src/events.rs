@@ -81,11 +81,14 @@ pub fn run_event_loop()-> std::io::Result<()> {
                                     let entry = aof_entry(&cmd);
                                     // Vec<u8> is a Write sink, so replies pile up in
                                     // outbuf instead of hitting the socket one by one.
+                                    let reply_start = outbuf.len();
                                     respond(cmd, &mut store, &mut outbuf);
 
                                     // logging the write, right after applying it
-                                    if let Some(bytes) = entry {
-                                        aof.append(&bytes);
+                                    if outbuf.get(reply_start).is_some_and(|byte| *byte != b'-') {
+                                        if let Some(bytes) = entry {
+                                            aof.append(&bytes);
+                                        }
                                     }
                                 }
                                 if !outbuf.is_empty() {

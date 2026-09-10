@@ -8,6 +8,8 @@ mod events;
 mod eviction;
 mod pipeline;
 mod aof;
+mod object;
+mod types_encoding;
 
 use crate::{events::run_event_loop};
 

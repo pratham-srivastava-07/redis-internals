@@ -11,7 +11,7 @@ use crate::helpers::utils::DecodeError;
 use crate::resp::decode_array_string;
 use crate::sync_tcp::ReadError;
 
-pub fn read_commands<S: Read>(conn: &mut S) -> Result<RedisCmds, ReadError> {
+pub fn _read_commands<S: Read>(conn: &mut S) -> Result<RedisCmds, ReadError> {
     let mut buffer = [0u8; 1024];
 
     let n = match conn.read(&mut buffer) {

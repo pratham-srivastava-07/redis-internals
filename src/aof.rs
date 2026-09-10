@@ -85,6 +85,7 @@ fn encode_command(name: &str, args: &[String]) -> Vec<u8> {
     match cmd.cmd.to_uppercase().as_str() {
         "SET" if cmd.args.len() == 2 => Some(encode_command(&cmd.cmd, &cmd.args)),
         "DEL" if !cmd.args.is_empty() => Some(encode_command(&cmd.cmd, &cmd.args)),
+        "INCR" if cmd.args.len() == 1 => Some(encode_command(&cmd.cmd, &cmd.args)),
         _ => None,
     }
 }
