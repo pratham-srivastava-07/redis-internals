@@ -1,17 +1,17 @@
 use rand::Rng;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::f32;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use crate::cmd::Entry;
-use crate::commands::delete_keys;
 use crate::config::{EVICTION_RATIO, MAX_KEY_LIMIT};
 use crate::helpers::utils::remove_keys;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SAMPLE_SIZE: usize = 20;
 const EXPIRED_THRESHOLD: f64 = 0.25;
+const LRU_CLOCK_MAX : u32 = 0x00FF_FFFF;
 
 // ---------------------------------------------------------------------------
 // Active expiration: sample TTL keys, delete expired ones, repeat while the

@@ -83,7 +83,7 @@ pub fn run_event_loop()-> std::io::Result<()> {
                                 for cmd in cmds {
                                     let entry = aof_entry(&cmd);
                                     // Vec<u8> is a Write sink, so replies pile up in
-                                    // outbuf instead of hitting the socket one by one.
+                                    // outbuf instead of hitting the socket one by one.  
                                     let reply_start = outbuf.len();
                                     respond(cmd, &mut store,  &mut stats,&mut outbuf);
 

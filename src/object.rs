@@ -6,7 +6,8 @@ use crate::types_encoding::*;
 #[derive(Debug, Clone)]
 pub struct Obj {
     pub value: ObjValue,
-    pub expires_at: Option<Instant>
+    pub expires_at: Option<Instant>,
+    pub last_accessed_at: u32,
 }
 
 #[derive(Debug, Clone)]
