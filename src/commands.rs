@@ -4,6 +4,7 @@ use std::io::{Error, Write};
 use std::time::{Duration, Instant};
 
 use crate::cmd::{Entry, RedisValue};
+use crate::eviction::get_current_clock;
 use crate::stats::Stat;
 use crate::types_encoding::*;
 
@@ -89,7 +90,8 @@ pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entr
 
     store.insert(key.to_string(), Entry {
         value: RedisValue::from_string(value.to_string()),
-        expires_at
+        expires_at,
+        last_accessed_at: get_current_clock(),
     });
 
     stream.write_all(b"+OK\r\n")
@@ -111,14 +113,17 @@ pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entr
         store.remove(key);
     }
 
-    match store.get(key) {
-        Some(entry) => match &entry.value {
-            RedisValue::Raw(val) => write_bulk(val, stream),
-            RedisValue::EmbStr(val) => write_bulk(val, stream),
-            RedisValue::Int(val) => write_bulk(val.to_string().as_bytes(), stream),
-            _ => stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
-        }
+    match store.get_mut(key) {
+        Some(entry) => {
+            entry.last_accessed_at = get_current_clock();
 
+            match &entry.value {
+                     RedisValue::Raw(val) => write_bulk(val, stream),
+                    RedisValue::EmbStr(val) => write_bulk(val, stream),
+                    RedisValue::Int(val) => write_bulk(val.to_string().as_bytes(), stream),
+                    _ => stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+            }
+        }
         None => stream.write_all(b"$-1\r\n")
     }
 }
@@ -225,6 +230,7 @@ fn remove_expired(key: &str, store: &mut HashMap<String, Entry>) {
 }
 
 pub fn incr_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
+    let now = get_current_clock();
     if args.len() != 1 {
         return stream.write_all(b"-ERR wrong number of arguments for 'incr' command\r\n");
     }
@@ -233,6 +239,7 @@ pub fn incr_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Ent
     let obj = store.entry(key.clone()).or_insert(Entry {
         value: RedisValue::Int(0),
         expires_at: None,
+        last_accessed_at: now,
     });
     if get_type(obj.type_encoding()) != OBJ_TYPE_STRING {
         return stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
@@ -251,6 +258,7 @@ pub fn incr_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Ent
     };
     // Validate before mutation, and preserve the existing expiration.
     obj.value = RedisValue::Int(next);
+    obj.last_accessed_at = now;
     write!(stream, ":{next}\r\n")
 }
 

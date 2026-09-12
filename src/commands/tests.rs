@@ -7,12 +7,13 @@ fn ping_replies_pong() {
     assert_eq!(out, b"+PONG\r\n");
 }
 
-fn run(store: &mut HashMap<String, Entry>, stats: &mut Stat,  name: &str, args: &[&str]) -> Vec<u8> {
+fn run(store: &mut HashMap<String, Entry>, name: &str, args: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
+    let mut stats = Stat::new();
     crate::sync_tcp::respond(crate::cmd::RedisCmd {
         cmd: name.into(),
         args: args.iter().map(|arg| arg.to_string()).collect(),
-    }, store, stats, &mut out);
+    }, store, &mut stats, &mut out);
     out
 }
 
@@ -58,11 +59,11 @@ fn incr_rejects_invalid_values_without_mutating_them() {
 fn incr_converts_byte_encodings_and_rejects_other_types() {
     let mut store = HashMap::new();
     for value in [RedisValue::Raw(b"12".to_vec()), RedisValue::EmbStr(b"12".to_vec().into_boxed_slice())] {
-        store.insert("k".into(), Entry { value, expires_at: None });
+        store.insert("k".into(), Entry { value, expires_at: None, last_accessed_at: get_current_clock() });
         assert_eq!(run(&mut store, "INCR", &["k"]), b":13\r\n");
         assert!(matches!(store["k"].value, RedisValue::Int(13)));
     }
-    store.insert("k".into(), Entry { value: RedisValue::_List(vec![]), expires_at: None });
+    store.insert("k".into(), Entry { value: RedisValue::_List(vec![]), expires_at: None, last_accessed_at: get_current_clock() });
     assert_eq!(run(&mut store, "INCR", &["k"]), b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
     assert!(matches!(store["k"].value, RedisValue::_List(_)));
 }
@@ -73,7 +74,7 @@ fn expired_keys_are_absent_and_incr_checks_arity() {
     assert!(run(&mut store, "INCR", &[]).starts_with(b"-ERR"));
     assert!(run(&mut store, "INCR", &["k", "extra"]).starts_with(b"-ERR"));
     assert!(store.is_empty());
-    store.insert("k".into(), Entry { value: RedisValue::Int(99), expires_at: Some(Instant::now()) });
+    store.insert("k".into(), Entry { value: RedisValue::Int(99), expires_at: Some(Instant::now()), last_accessed_at: get_current_clock() });
     assert_eq!(run(&mut store, "INCR", &["k"]), b":1\r\n");
     assert_eq!(store["k"].expires_at, None);
     store.get_mut("k").unwrap().expires_at = Some(Instant::now());
@@ -90,7 +91,7 @@ fn aof_encoded_counter_commands_replay_through_dispatch() {
     }
     let mut store = HashMap::new();
     for cmd in crate::pipeline::parse_commands(&mut bytes).unwrap() {
-        crate::sync_tcp::respond(cmd, &mut store, &mut Vec::new());
+        crate::sync_tcp::respond(cmd, &mut store, &mut Stat::new(), &mut Vec::new());
     }
     assert_eq!(run(&mut store, "GET", &["k"]), b"$2\r\n42\r\n");
 }

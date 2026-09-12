@@ -1,22 +1,33 @@
-use rand::Rng;
-use std::cell::RefCell;
+use rand::{seq::IteratorRandom, Rng};
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cmd::Entry;
 use crate::config::{EVICTION_RATIO, MAX_KEY_LIMIT};
-use crate::helpers::utils::remove_keys;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const SAMPLE_SIZE: usize = 20;
 const EXPIRED_THRESHOLD: f64 = 0.25;
-const LRU_CLOCK_MAX : u32 = 0x00FF_FFFF;
+const LRU_CLOCK_MAX: u32 = 0x00FF_FFFF;
+const LRU_SAMPLE_SIZE: usize = 5;
+const EVICTION_POOL_SIZE: usize = 16;
 
-// ---------------------------------------------------------------------------
-// Active expiration: sample TTL keys, delete expired ones, repeat while the
-// sample is >25% expired. (This is Redis's activeExpireCycle.)
-// ---------------------------------------------------------------------------
+pub fn get_current_clock() -> u32 {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs();
+
+    (seconds & u64::from(LRU_CLOCK_MAX)) as u32
+}
+
+pub fn get_idle_time(last_accessed_at: u32) -> u32 {
+    idle_time_at(last_accessed_at, get_current_clock())
+}
+
+fn idle_time_at(last_accessed_at: u32, current: u32) -> u32 {
+    current.wrapping_sub(last_accessed_at) & LRU_CLOCK_MAX
+}
+
 pub fn evict_keys(store: &mut HashMap<String, Entry>) {
     let now = Instant::now();
 
@@ -57,150 +68,110 @@ pub fn evict_keys(store: &mut HashMap<String, Entry>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LRU eviction index.
-//
-// A doubly linked list of keys ordered by recency, plus a HashMap for O(1)
-// lookup. The node right after `head` is the most-recently-used; the node
-// right before `tail` is the least-recently-used (the eviction victim).
-//
-// `head` and `tail` are sentinel nodes (dummy keys) so we never special-case
-// the empty-list / first / last positions.
-//
-// `next` links own the chain (strong Rc). `prev` links are Weak to avoid a
-// reference cycle that would leak memory.
-// ---------------------------------------------------------------------------
-
-type Link = Rc<RefCell<Node>>;
-
-struct Node {
+#[derive(Debug)]
+struct Candidate {
     key: String,
-    prev: Option<Weak<RefCell<Node>>>,
-    next: Option<Link>,
+    idle: u32,
 }
 
-impl Node {
-    fn new(key: String) -> Link {
-        Rc::new(RefCell::new(Node {
-            key,
-            prev: None,
-            next: None,
-        }))
-    }
+pub struct ApproxLru {
+    pool: Vec<Candidate>,
 }
 
-pub struct Lru {
-    map: HashMap<String, Link>,
-    capacity: usize,
-    head: Link, // MRU side
-    tail: Link, // LRU side
-}
-
-impl Lru {
-    pub fn new(capacity: usize) -> Self {
-        let head = Node::new(String::new());
-        let tail = Node::new(String::new());
-
-        // wire the two sentinels together: head <-> tail
-        head.borrow_mut().next = Some(Rc::clone(&tail));
-        tail.borrow_mut().prev = Some(Rc::downgrade(&head));
-
-        Lru {
-            map: HashMap::new(),
-            capacity,
-            head,
-            tail,
+impl ApproxLru {
+    pub fn new() -> Self {
+        Self {
+            pool: Vec::with_capacity(EVICTION_POOL_SIZE),
         }
     }
 
-    /// Record that `key` was just used. If inserting a brand-new key pushes us
-    /// over capacity, the least-recently-used key is evicted and returned so
-    /// the caller can remove it from the real store.
-    pub fn touch(&mut self, key: &str) -> Option<String> {
-        // already tracked -> just move it to the front (MRU)
-        if let Some(node) = self.map.get(key).cloned() {
-            Self::unlink(&node);
-            self.push_front(&node);
-            return None;
+    fn insert_candidate(&mut self, candidate: Candidate) {
+        if let Some(index) = self.pool.iter().position(|entry| entry.key == candidate.key) {
+            self.pool.remove(index);
         }
 
-        // new key -> create, index, and place at the front
-        let node = Node::new(key.to_string());
-        self.map.insert(key.to_string(), Rc::clone(&node));
-        self.push_front(&node);
+        let mut position = self.pool
+            .iter()
+            .position(|entry| entry.idle >= candidate.idle)
+            .unwrap_or(self.pool.len());
 
-        if self.map.len() > self.capacity {
-            return self.evict();
-        }
-        None
-    }
+        if self.pool.len() == EVICTION_POOL_SIZE {
+            if position == 0 {
+                return;
+            }
 
-    /// Remove a key from the index (e.g. it was DEL'd or expired elsewhere).
-    pub fn remove(&mut self, key: &str) {
-        if let Some(node) = self.map.remove(key) {
-            Self::unlink(&node);
-        }
-    }
-
-    /// Drop the least-recently-used key and return it.
-    fn evict(&mut self) -> Option<String> {
-        let lru = self.tail.borrow().prev.clone()?.upgrade()?;
-
-        // if the node before tail is head, the list is empty
-        if Rc::ptr_eq(&lru, &self.head) {
-            return None;
+            self.pool.remove(0);
+            position -= 1;
         }
 
-        Self::unlink(&lru);
-        let key = lru.borrow().key.clone();
-        self.map.remove(&key);
-        Some(key)
+        self.pool.insert(position, candidate);
     }
 
-    // --- linked-list plumbing -------------------------------------------------
+    fn populate(&mut self, store: &HashMap<String, Entry>, current: u32) {
+        self.pool.retain_mut(|candidate| {
+            let Some(entry) = store.get(&candidate.key) else {
+                return false;
+            };
+            candidate.idle = idle_time_at(entry.last_accessed_at, current);
+            true
+        });
+        self.pool.sort_by_key(|candidate| candidate.idle);
 
-    /// Splice `node` in right after `head` (the MRU position).
-    fn push_front(&self, node: &Link) {
-        let first = self.head.borrow().next.clone().expect("head always has next");
+        let mut rng = rand::thread_rng();
+        // HashMap sampling traverses the map but retains only five entries.
+        let samples = store.iter().choose_multiple(&mut rng, LRU_SAMPLE_SIZE);
 
-        node.borrow_mut().prev = Some(Rc::downgrade(&self.head));
-        node.borrow_mut().next = Some(Rc::clone(&first));
-
-        self.head.borrow_mut().next = Some(Rc::clone(node));
-        first.borrow_mut().prev = Some(Rc::downgrade(node));
+        for (key, entry) in samples {
+            self.insert_candidate(Candidate {
+                key: key.clone(),
+                idle: idle_time_at(entry.last_accessed_at, current),
+            });
+        }
     }
 
-    /// Detach `node` from its neighbours, stitching them together.
-    fn unlink(node: &Link) {
-        let prev = node
-            .borrow()
-            .prev
-            .clone()
-            .and_then(|w| w.upgrade())
-            .expect("real nodes always have a prev");
-        let next = node.borrow().next.clone().expect("real nodes always have a next");
+    pub fn enforce_limit(&mut self, store: &mut HashMap<String, Entry>) -> Vec<String> {
+        let limit = usize::try_from(MAX_KEY_LIMIT)
+            .expect("MAX_KEY_LIMIT must be nonnegative");
+        let mut removed = Vec::new();
 
-        prev.borrow_mut().next = Some(Rc::clone(&next));
-        next.borrow_mut().prev = Some(Rc::downgrade(&prev));
+        if store.len() <= limit {
+            return removed;
+        }
 
-        node.borrow_mut().prev = None;
-        node.borrow_mut().next = None;
+        let now = Instant::now();
+        store.retain(|key, entry| {
+            let expired = entry.expires_at.is_some_and(|deadline| now >= deadline);
+            if expired {
+                removed.push(key.clone());
+            }
+            !expired
+        });
+
+        if store.len() <= limit {
+            return removed;
+        }
+
+        assert!(
+            EVICTION_RATIO.is_finite() && (0.0..=1.0).contains(&EVICTION_RATIO),
+            "EVICTION_RATIO must be between 0 and 1"
+        );
+        let batch_size = (EVICTION_RATIO * limit as f64) as usize;
+        let eviction_count = batch_size.max(store.len() - limit).min(store.len());
+        let target_len = store.len() - eviction_count;
+
+        while store.len() > target_len {
+            self.populate(store, get_current_clock());
+            let candidate = self.pool.pop()
+                .expect("a nonempty store must produce an eviction candidate");
+
+            if store.remove(&candidate.key).is_some() {
+                removed.push(candidate.key);
+            }
+        }
+
+        removed
     }
 }
 
-
-pub fn evict_all_keys(store: &mut HashMap<String, Entry>) {
-    let mut evict_count = (EVICTION_RATIO * MAX_KEY_LIMIT as f64) as i64;
-
-    let keys: Vec<String> = store.keys().cloned().collect();
-    // iteration is entirely random over here 
-    for key in keys {
-        // delete_keys(key_args, store, stream)
-        remove_keys(key.to_string(), store);
-        evict_count-=1;
-
-        if evict_count == 0 {
-            break;
-        }
-    }
-}
+#[cfg(test)]
+mod tests;

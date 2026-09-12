@@ -4,12 +4,12 @@ use std::time::{Duration, Instant};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::{TcpStream};
 use crate::aof::{aof_entry, Aof};
-use crate::cmd::{Entry};
+use crate::cmd::{Entry, RedisCmd};
 use crate::helpers::port::{get_socket_address, port_and_host};
 use crate::stats::Stat;
 use crate::sync_tcp::respond;
 use crate::pipeline::{fill_box, parse_commands, Fill};
-use crate::eviction::evict_keys;
+use crate::eviction::{evict_keys, ApproxLru};
 
 const SERVER: Token = Token(0);
 
@@ -19,6 +19,20 @@ const SERVER: Token = Token(0);
 struct Client {
     stream: TcpStream,
     inbox: Vec<u8>,
+}
+
+fn enforce_capacity(lru: &mut ApproxLru, store: &mut HashMap<String, Entry>, aof: &mut Aof) {
+    let removed = lru.enforce_limit(store);
+    if removed.is_empty() {
+        return;
+    }
+
+    let command = RedisCmd {
+        cmd: "DEL".to_string(),
+        args: removed,
+    };
+    let bytes = aof_entry(&command).expect("eviction DEL must be AOF-encodable");
+    aof.append(&bytes);
 }
 
 pub fn run_event_loop()-> std::io::Result<()> {
@@ -46,13 +60,17 @@ pub fn run_event_loop()-> std::io::Result<()> {
     // aof state build 
     Aof::load(&mut store)?;
     let mut aof = Aof::new()?;
+    let mut lru = ApproxLru::new();
+    enforce_capacity(&mut lru, &mut store, &mut aof);
+    aof.flush();
 
     let mut stats: Stat = Stat::new();
 
     let mut last_sweep = Instant::now();
 
     loop {
-        poll.poll(&mut events, None)?;
+        let timeout = Duration::from_millis(100).saturating_sub(last_sweep.elapsed());
+        poll.poll(&mut events, Some(timeout))?;
 
         for event in events.iter() {
             match event.token() {
@@ -93,6 +111,7 @@ pub fn run_event_loop()-> std::io::Result<()> {
                                             aof.append(&bytes);
                                         }
                                     }
+                                    enforce_capacity(&mut lru, &mut store, &mut aof);
                                 }
                                 if !outbuf.is_empty() {
                                     // one write for the whole pipeline batch
