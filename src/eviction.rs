@@ -133,6 +133,11 @@ impl ApproxLru {
         }
     }
 
+    pub fn victim(&mut self, store: &Store) -> Option<Vec<u8>> {
+        self.populate(store, get_current_clock());
+        self.pool.last().map(|candidate| candidate.key.clone())
+    }
+
     pub fn enforce_limit(&mut self, store: &mut Store) -> Vec<Vec<u8>> {
         let limit = usize::try_from(MAX_KEY_LIMIT).expect("MAX_KEY_LIMIT must be nonnegative");
         let mut removed = Vec::new();

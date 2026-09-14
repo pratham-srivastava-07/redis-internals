@@ -12,6 +12,7 @@ mod object;
 mod types_encoding;
 mod config;
 mod stats;
+mod admission;
 
 use crate::{events::run_event_loop};
 

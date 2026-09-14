@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{self, ErrorKind, Write};
 use std::time::{Duration, Instant};
 
+use crate::admission::Admission;
 use crate::aof::Aof;
 use crate::cmd::{RedisCmd, Store};
 use crate::commands::Outcome;
@@ -54,6 +55,7 @@ fn drive_client(
     stats: &mut Stat,
     lru: &mut ApproxLru,
     aof: &mut Aof,
+    admission: &mut Admission,
 ) -> io::Result<bool> {
     loop {
         match flush_output(&mut client.stream, &mut client.output, &mut client.written) {
@@ -64,9 +66,22 @@ fn drive_client(
         let Some(cmd) = client.pending.pop_front() else {
             return Ok(client.read_closed);
         };
-        let outcome = respond(&cmd, store, stats, &mut client.output)?;
+        let (outcome, victim) = match cmd.cmd.as_str() {
+            "CACHE.PUT" => admission.put(&cmd, store, lru, &mut client.output)?,
+            "CACHE.STATS" => (admission.stats(&cmd.args, &mut client.output)?, None),
+            _ => {
+                let outcome = respond(&cmd, store, stats, &mut client.output)?;
+                if cmd.cmd == "GET" && outcome == Outcome::ReadOnly && cmd.args.len() == 1 {
+                    admission.record_get(&cmd.args[0], store.contains_key(&cmd.args[0]));
+                }
+                (outcome, None)
+            }
+        };
         if outcome == Outcome::Modified {
             aof.record_mutation(&cmd, store)?;
+        }
+        if let Some(victim) = victim {
+            aof.record_deleted(&[victim])?;
         }
         enforce_capacity(lru, store, aof)?;
     }
@@ -87,6 +102,7 @@ pub fn run_event_loop() -> io::Result<()> {
     enforce_capacity(&mut lru, &mut store, &mut aof)?;
     aof.flush()?;
     let mut stats = Stat::new();
+    let mut admission = Admission::new();
     let mut last_sweep = Instant::now();
 
     loop {
@@ -142,7 +158,14 @@ pub fn run_event_loop() -> io::Result<()> {
                 }
             }
             if !close {
-                close = drive_client(client, &mut store, &mut stats, &mut lru, &mut aof)?;
+                close = drive_client(
+                    client,
+                    &mut store,
+                    &mut stats,
+                    &mut lru,
+                    &mut aof,
+                    &mut admission,
+                )?;
             }
             if close {
                 poll.registry().deregister(&mut client.stream)?;

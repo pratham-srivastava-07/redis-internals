@@ -1,4 +1,6 @@
 mod support;
+#[path = "admission/mod.rs"]
+mod admission;
 
 use std::fs;
 use std::io::Write;
