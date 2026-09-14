@@ -1,62 +1,27 @@
-use std::{collections::HashMap, io::{ErrorKind, Read, Write}};
+use crate::cmd::{RedisCmd, Store};
+use crate::commands::{self, Outcome};
+use crate::stats::Stat;
+use std::io::{self, Write};
 
-
-use crate::{cmd::{Entry, RedisCmd}, commands::{self, delete_keys, eval_ping, expire_command, get_command, set_command, set_ttl}, resp::decode_array_string, stats::Stat};
-
-#[derive(Debug)]
-pub enum ReadError {
-    WouldBlock,
-    Disconnected,
-    Decode
-}
-
-pub fn read_command<S: Read>(con: &mut S) -> Result<RedisCmd, ReadError> {
-    let mut buffer = [0u8; 512];
-
-    let n = match con.read(&mut buffer) {
-        Ok(0) => return Err(ReadError::Disconnected),
-        Ok(n) => n,
-        Err(ref e) if e.kind() == ErrorKind::WouldBlock => return Err(ReadError::WouldBlock),
-        Err(_) => return Err(ReadError::Disconnected)
-    };
-
-    let (tokens, _consumed) = decode_array_string(&buffer[..n]).map_err(|_| ReadError::Decode)?;
-
-    if tokens.is_empty() {
-        return Err(ReadError::Decode);
-    }
-
-    Ok(RedisCmd {
-        cmd: tokens[0].clone(),
-        args: tokens[1..].to_vec()
-    })
-
-}
-
-
-pub fn respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stats: &mut Stat,  stream: &mut S) {
-    let val = eval_and_respond(cmd, store, stats,  stream);
-
-    if val.is_err() {
-        respond_error("Error", stream)
-    }
-}
-
-fn respond_error<S: Write>(err: &str, stream: &mut S) {
-    let _ = stream.write_all(format!("-{}\r\n", err).as_bytes());
-}
-
-fn eval_and_respond<S: Write>(cmd: RedisCmd, store: &mut HashMap<String, Entry>, stats: &mut Stat, stream: &mut S) -> std::io::Result<()> {
-    match cmd.cmd.to_uppercase().as_str() {
-        "PING" => eval_ping(cmd.args, stream),
-        "SET" => set_command(cmd.args, store, stream),
-        "GET" => get_command(cmd.args, store, stream),
-        "INCR" => crate::commands::incr_command(cmd.args, store, stream),
-        "OBJECT" => crate::commands::object_command(cmd.args, store, stream),
-        "INFO" => commands::eval_info(stats, stream),
-        "TTL" => set_ttl(cmd.args, store, stream),
-        "DEL" => delete_keys(cmd.args, store, stream),
-        "EXPIRE" => expire_command(cmd.args, store, stream),
-        _ => stream.write_all(b"-ERR unknown command\r\n"),
+pub fn respond<S: Write>(
+    cmd: &RedisCmd,
+    store: &mut Store,
+    stats: &mut Stat,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    match cmd.cmd.to_ascii_uppercase().as_str() {
+        "PING" => commands::eval_ping(&cmd.args, stream),
+        "SET" => commands::set_command(&cmd.args, store, stream),
+        "GET" => commands::get_command(&cmd.args, store, stream),
+        "INCR" => commands::incr_command(&cmd.args, store, stream),
+        "OBJECT" => commands::object_command(&cmd.args, store, stream),
+        "INFO" => commands::eval_info(&cmd.args, store, stats, stream),
+        "TTL" => commands::set_ttl(&cmd.args, store, stream),
+        "DEL" => commands::delete_keys(&cmd.args, store, stream),
+        "EXPIRE" => commands::expire_command(&cmd.args, store, stream),
+        _ => {
+            stream.write_all(b"-ERR unknown command\r\n")?;
+            Ok(Outcome::Rejected)
+        }
     }
 }

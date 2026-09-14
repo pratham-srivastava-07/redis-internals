@@ -1,5 +1,5 @@
 use super::*;
-use crate::cmd::{RedisCmd, RedisValue};
+use crate::cmd::{Entry, RedisCmd, RedisValue};
 use crate::stats::Stat;
 
 fn entry(last_accessed_at: u32) -> Entry {
@@ -11,12 +11,17 @@ fn entry(last_accessed_at: u32) -> Entry {
 }
 
 fn candidate(key: &str, idle: u32) -> Candidate {
-    Candidate { key: key.into(), idle }
+    Candidate {
+        key: key.into(),
+        idle,
+    }
 }
 
-fn filled_store(count: usize) -> HashMap<String, Entry> {
+fn filled_store(count: usize) -> Store {
     let current = get_current_clock();
-    (0..count).map(|index| (index.to_string(), entry(current))).collect()
+    (0..count)
+        .map(|index| (index.to_string().into_bytes(), entry(current)))
+        .collect()
 }
 
 #[test]
@@ -40,8 +45,8 @@ fn pool_orders_candidates_and_updates_duplicates() {
 
     lru.insert_candidate(candidate("b", 5));
     assert_eq!(lru.pool.len(), 3);
-    assert_eq!(lru.pool.first().unwrap().key, "b");
-    assert_eq!(lru.pool.pop().unwrap().key, "c");
+    assert_eq!(lru.pool.first().unwrap().key, b"b");
+    assert_eq!(lru.pool.pop().unwrap().key, b"c");
 }
 
 #[test]
@@ -53,12 +58,12 @@ fn full_pool_retains_better_candidates() {
 
     lru.insert_candidate(candidate("recent", 0));
     assert_eq!(lru.pool.len(), EVICTION_POOL_SIZE);
-    assert!(!lru.pool.iter().any(|entry| entry.key == "recent"));
+    assert!(!lru.pool.iter().any(|entry| entry.key == b"recent"));
 
     lru.insert_candidate(candidate("old", 100));
     assert_eq!(lru.pool.len(), EVICTION_POOL_SIZE);
     assert_eq!(lru.pool.first().unwrap().idle, 2);
-    assert_eq!(lru.pool.last().unwrap().key, "old");
+    assert_eq!(lru.pool.last().unwrap().key, b"old");
 }
 
 #[test]
@@ -67,16 +72,13 @@ fn population_drops_missing_keys_and_refreshes_recreated_keys() {
     lru.insert_candidate(candidate("missing", 100));
     lru.insert_candidate(candidate("recreated", 100));
 
-    let store = HashMap::from([
-        ("recreated".into(), entry(100)),
-        ("old".into(), entry(10)),
-    ]);
+    let store = Store::from([("recreated".into(), entry(100)), ("old".into(), entry(10))]);
     lru.populate(&store, 100);
 
     assert_eq!(lru.pool.len(), 2);
-    assert_eq!(lru.pool.first().unwrap().key, "recreated");
+    assert_eq!(lru.pool.first().unwrap().key, b"recreated");
     assert_eq!(lru.pool.first().unwrap().idle, 0);
-    assert_eq!(lru.pool.pop().unwrap().key, "old");
+    assert_eq!(lru.pool.pop().unwrap().key, b"old");
 }
 
 #[test]
@@ -84,7 +86,7 @@ fn capacity_evicts_a_batch_and_handles_oversized_stores() {
     let limit = usize::try_from(MAX_KEY_LIMIT).unwrap();
     let batch = (EVICTION_RATIO * limit as f64) as usize;
     let mut lru = ApproxLru::new();
-    assert!(lru.enforce_limit(&mut HashMap::new()).is_empty());
+    assert!(lru.enforce_limit(&mut Store::new()).is_empty());
     let mut store = filled_store(limit);
     assert!(lru.enforce_limit(&mut store).is_empty());
 
@@ -109,14 +111,14 @@ fn expired_keys_are_reclaimed_before_live_keys() {
     store.insert("expired".into(), expired);
 
     let removed = ApproxLru::new().enforce_limit(&mut store);
-    assert_eq!(removed, vec!["expired"]);
+    assert_eq!(removed, vec![b"expired".to_vec()]);
     assert_eq!(store.len(), limit);
 }
 
 #[test]
 fn eviction_deletions_replay_after_writes() {
     let limit = usize::try_from(MAX_KEY_LIMIT).unwrap();
-    let mut store = HashMap::new();
+    let mut store = Store::new();
     let mut stats = Stat::new();
     let mut lru = ApproxLru::new();
     let mut log = Vec::new();
@@ -124,24 +126,46 @@ fn eviction_deletions_replay_after_writes() {
     for index in 0..=limit {
         let cmd = RedisCmd {
             cmd: "SET".into(),
-            args: vec![index.to_string(), "value".into()],
+            args: vec![index.to_string().into_bytes(), "value".into()],
         };
         log.extend(crate::aof::aof_entry(&cmd).unwrap());
-        crate::sync_tcp::respond(cmd, &mut store, &mut stats, &mut Vec::new());
+        crate::sync_tcp::respond(&cmd, &mut store, &mut stats, &mut Vec::new()).unwrap();
         let removed = lru.enforce_limit(&mut store);
         if !removed.is_empty() {
-            log.extend(crate::aof::aof_entry(&RedisCmd {
-                cmd: "DEL".into(),
-                args: removed,
-            }).unwrap());
+            log.extend(
+                crate::aof::aof_entry(&RedisCmd {
+                    cmd: "DEL".into(),
+                    args: removed,
+                })
+                .unwrap(),
+            );
         }
     }
 
-    let mut replayed = HashMap::new();
+    let mut replayed = Store::new();
     for cmd in crate::pipeline::parse_commands(&mut log).unwrap() {
-        crate::sync_tcp::respond(cmd, &mut replayed, &mut stats, &mut Vec::new());
+        crate::sync_tcp::respond(&cmd, &mut replayed, &mut stats, &mut Vec::new()).unwrap();
     }
     assert!(store.len() < limit);
     assert_eq!(store.len(), replayed.len());
     assert!(store.keys().all(|key| replayed.contains_key(key)));
+}
+
+#[test]
+fn active_expiration_removes_expired_entries_and_preserves_live_ones() {
+    let mut store = filled_store(45);
+    for entry in store.values_mut() {
+        entry.expires_at = Some(Instant::now());
+    }
+    store.insert("persistent".into(), entry(get_current_clock()));
+    let mut live = entry(get_current_clock());
+    live.expires_at = Some(Instant::now() + std::time::Duration::from_secs(60));
+    store.insert("live".into(), live);
+
+    evict_keys(&mut store);
+
+    assert_eq!(store.len(), 2);
+    assert!(store.contains_key(b"persistent".as_slice()));
+    assert!(store.contains_key(b"live".as_slice()));
+    evict_keys(&mut Store::new());
 }

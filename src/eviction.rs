@@ -1,8 +1,7 @@
-use rand::{seq::IteratorRandom, Rng};
-use std::collections::HashMap;
+use rand::{Rng, seq::IteratorRandom};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::cmd::Entry;
+use crate::cmd::Store;
 use crate::config::{EVICTION_RATIO, MAX_KEY_LIMIT};
 
 const SAMPLE_SIZE: usize = 20;
@@ -28,11 +27,11 @@ fn idle_time_at(last_accessed_at: u32, current: u32) -> u32 {
     current.wrapping_sub(last_accessed_at) & LRU_CLOCK_MAX
 }
 
-pub fn evict_keys(store: &mut HashMap<String, Entry>) {
+pub fn evict_keys(store: &mut Store) {
     let now = Instant::now();
 
     // Only keys that actually carry a TTL are candidates for expiry.
-    let mut candidates: Vec<String> = store
+    let mut candidates: Vec<Vec<u8>> = store
         .iter()
         .filter(|(_, e)| e.expires_at.is_some())
         .map(|(k, _)| k.clone())
@@ -70,7 +69,7 @@ pub fn evict_keys(store: &mut HashMap<String, Entry>) {
 
 #[derive(Debug)]
 struct Candidate {
-    key: String,
+    key: Vec<u8>,
     idle: u32,
 }
 
@@ -86,11 +85,16 @@ impl ApproxLru {
     }
 
     fn insert_candidate(&mut self, candidate: Candidate) {
-        if let Some(index) = self.pool.iter().position(|entry| entry.key == candidate.key) {
+        if let Some(index) = self
+            .pool
+            .iter()
+            .position(|entry| entry.key == candidate.key)
+        {
             self.pool.remove(index);
         }
 
-        let mut position = self.pool
+        let mut position = self
+            .pool
             .iter()
             .position(|entry| entry.idle >= candidate.idle)
             .unwrap_or(self.pool.len());
@@ -107,7 +111,7 @@ impl ApproxLru {
         self.pool.insert(position, candidate);
     }
 
-    fn populate(&mut self, store: &HashMap<String, Entry>, current: u32) {
+    fn populate(&mut self, store: &Store, current: u32) {
         self.pool.retain_mut(|candidate| {
             let Some(entry) = store.get(&candidate.key) else {
                 return false;
@@ -129,9 +133,8 @@ impl ApproxLru {
         }
     }
 
-    pub fn enforce_limit(&mut self, store: &mut HashMap<String, Entry>) -> Vec<String> {
-        let limit = usize::try_from(MAX_KEY_LIMIT)
-            .expect("MAX_KEY_LIMIT must be nonnegative");
+    pub fn enforce_limit(&mut self, store: &mut Store) -> Vec<Vec<u8>> {
+        let limit = usize::try_from(MAX_KEY_LIMIT).expect("MAX_KEY_LIMIT must be nonnegative");
         let mut removed = Vec::new();
 
         if store.len() <= limit {
@@ -161,7 +164,9 @@ impl ApproxLru {
 
         while store.len() > target_len {
             self.populate(store, get_current_clock());
-            let candidate = self.pool.pop()
+            let candidate = self
+                .pool
+                .pop()
                 .expect("a nonempty store must produce an eviction candidate");
 
             if store.remove(&candidate.key).is_some() {

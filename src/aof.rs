@@ -1,92 +1,144 @@
-// this file corresponds to how redis uses persistence for the entries it has in-memory.
-// there are basically 2 ways to do it...RDB (snapshot) and AOF (append only file)
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::time::Instant;
 
-use std::{collections::HashMap, fs::{File, OpenOptions}, io::{self, Read, Write}};
-
-use crate::{cmd::{Entry, RedisCmd}, helpers::utils::DecodeError, resp::decode_array_string, stats::Stat, sync_tcp::respond};
+use crate::cmd::{RedisCmd, RedisValue, Store};
+use crate::commands::{Outcome, unix_millis};
+use crate::helpers::utils::DecodeError;
+use crate::resp::decode_array_string;
+use crate::stats::Stat;
+use crate::sync_tcp::respond;
 
 const AOF_PATH: &str = "appendonly.aof";
 
 pub struct Aof {
-    file: File
+    file: File,
 }
 
 impl Aof {
-    // creating the append only file 
-    pub fn new() -> io::Result<Aof> {
-        let file = OpenOptions::new().create(true).append(true).read(true).open(AOF_PATH)?;
-        Ok(Aof { file })
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            file: OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(AOF_PATH)?,
+        })
     }
 
-    // writing command's resp bytes out
-    pub fn append(&mut self, bytes: &[u8]) {
-        if let Err(e) = self.file.write_all(bytes) {
-            eprintln!("aof append failed: {}", e);
+    pub fn append(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.file.write_all(bytes)
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.file.sync_all()
+    }
+
+    pub fn record_deleted(&mut self, keys: &[Vec<u8>]) -> io::Result<()> {
+        for key in keys {
+            self.append(&encode_command("DEL", std::slice::from_ref(key)))?;
         }
+        Ok(())
     }
 
-    // forcing everything we have written to actually hit the disc
-    pub fn flush(&mut self) {
-        if let Err(e) = self.file.sync_all() {
-            eprintln!("Flushing into disc failed: {}", e);
+    pub fn record_mutation(&mut self, cmd: &RedisCmd, store: &Store) -> io::Result<()> {
+        if cmd.cmd.eq_ignore_ascii_case("DEL") {
+            return self.record_deleted(&cmd.args);
         }
-    }
-
-    // startup: read the whole file and replay commands 
-
-    pub fn load(store: &mut HashMap<String, Entry>) -> io::Result<()> {
-        let mut file = match OpenOptions::new().read(true).open(AOF_PATH) {
-            Ok(f) => f,
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e)
+        let key = &cmd.args[0];
+        let Some(entry) = store.get(key) else {
+            return self.record_deleted(std::slice::from_ref(key));
         };
+        let now = Instant::now();
+        if entry.expires_at.is_some_and(|deadline| deadline <= now) {
+            return self.record_deleted(std::slice::from_ref(key));
+        }
+        let absolute = entry
+            .expires_at
+            .map(|deadline| -> io::Result<u64> {
+                let remaining = u64::try_from(deadline.duration_since(now).as_millis())
+                    .map_err(io::Error::other)?;
+                unix_millis()?
+                    .checked_add(remaining)
+                    .ok_or_else(|| io::Error::other("expiry timestamp overflow"))
+            })
+            .transpose()?;
+        let value = match &entry.value {
+            RedisValue::Raw(bytes) => bytes.clone(),
+            RedisValue::EmbStr(bytes) => bytes.to_vec(),
+            RedisValue::Int(number) => number.to_string().into_bytes(),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unsupported AOF value",
+                ));
+            }
+        };
+        // Persist resulting values so expiry cannot change the meaning of a replayed INCR.
+        let mut args = vec![key.clone(), value];
+        if let Some(absolute) = absolute {
+            args.extend([b"PXAT".to_vec(), absolute.to_string().into_bytes()]);
+        }
+        self.append(&encode_command("SET", &args))
+    }
 
-        let mut buffer: Vec<u8> = Vec::new();
+    pub fn load(store: &mut Store) -> io::Result<()> {
+        let mut file = match OpenOptions::new().read(true).write(true).open(AOF_PATH) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
         let mut offset = 0;
         let mut stats = Stat::new();
-
-
-        file.read_to_end(&mut buffer)?;
-
         while offset < buffer.len() {
-            match decode_array_string(&mut buffer[offset..]) {
+            match decode_array_string(&buffer[offset..]) {
                 Ok((tokens, consumed)) => {
-                    offset += consumed;
-                    if tokens.is_empty() {
-                        break;
+                    let cmd = RedisCmd::from_tokens(tokens).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid AOF command")
+                    })?;
+                    if !matches!(cmd.cmd.as_str(), "SET" | "INCR" | "DEL" | "EXPIRE")
+                        || respond(&cmd, store, &mut stats, &mut io::sink())? == Outcome::Rejected
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("invalid AOF operation at byte {offset}"),
+                        ));
                     }
-                    let cmd = RedisCmd {
-                        cmd: tokens[0].clone(),
-                        args: tokens[1..].to_vec()
-                    };
-                    respond(cmd, store, &mut stats,&mut io::sink());
+                    offset += consumed;
                 }
-                Err(DecodeError::Incomplete) => break,
-                Err(DecodeError::Invalid) => break
+                Err(DecodeError::Incomplete) => {
+                    // Remove only an incomplete final frame before accepting new writes.
+                    file.set_len(offset as u64)?;
+                    file.sync_all()?;
+                    break;
+                }
+                Err(DecodeError::Invalid) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("corrupt AOF at byte {offset}"),
+                    ));
+                }
             }
         }
-
         Ok(())
-
     }
 }
 
-fn encode_command(name: &str, args: &[String]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let n = 1 + args.len();
-    out.extend_from_slice(format!("*{}\r\n", n).as_bytes());
-    out.extend_from_slice(format!("${}\r\n{}\r\n", name.len(), name).as_bytes());
-    for a in args {
-        out.extend_from_slice(format!("${}\r\n{}\r\n", a.len(), a).as_bytes());
+pub fn encode_command(name: &str, args: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = format!("*{}\r\n", args.len() + 1).into_bytes();
+    for arg in std::iter::once(name.as_bytes()).chain(args.iter().map(Vec::as_slice)) {
+        write!(out, "${}\r\n", arg.len()).unwrap();
+        out.extend_from_slice(arg);
+        out.extend_from_slice(b"\r\n");
     }
     out
 }
 
- pub fn aof_entry(cmd: &RedisCmd) -> Option<Vec<u8>> {
-    match cmd.cmd.to_uppercase().as_str() {
-        "SET" if cmd.args.len() == 2 => Some(encode_command(&cmd.cmd, &cmd.args)),
-        "DEL" if !cmd.args.is_empty() => Some(encode_command(&cmd.cmd, &cmd.args)),
-        "INCR" if cmd.args.len() == 1 => Some(encode_command(&cmd.cmd, &cmd.args)),
+#[cfg(test)]
+pub fn aof_entry(cmd: &RedisCmd) -> Option<Vec<u8>> {
+    match cmd.cmd.to_ascii_uppercase().as_str() {
+        "SET" | "DEL" | "INCR" => Some(encode_command(&cmd.cmd, &cmd.args)),
         _ => None,
     }
 }

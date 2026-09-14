@@ -1,7 +1,6 @@
-
+use crate::types_encoding::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use crate::types_encoding::*;
 
 #[derive(Debug, Clone)]
 pub struct Obj {
@@ -22,13 +21,13 @@ pub enum ObjValue {
 }
 
 impl ObjValue {
-    pub fn from_string(value: String) -> Self {
-        if let Some(number) = parse_integer(value.as_bytes()) {
+    pub fn from_bytes(value: Vec<u8>) -> Self {
+        if let Some(number) = parse_integer(&value) {
             Self::Int(number)
         } else if value.len() <= 44 {
-            Self::EmbStr(value.into_bytes().into_boxed_slice())
+            Self::EmbStr(value.into_boxed_slice())
         } else {
-            Self::Raw(value.into_bytes())
+            Self::Raw(value)
         }
     }
 }

@@ -1,307 +1,342 @@
-use std::any::{Any};
-use std::collections::HashMap;
-use std::io::{Error, Write};
-use std::time::{Duration, Instant};
-
-use crate::cmd::{Entry, RedisValue};
+use crate::cmd::{Entry, RedisValue, Store};
 use crate::eviction::get_current_clock;
 use crate::stats::Stat;
 use crate::types_encoding::*;
+use std::io::{self, Write};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-
-pub fn eval_ping<S: Write>(args: Vec<String>, stream: &mut S) -> std::io::Result<()> {
-    if args.len() >= 2 {
-        return stream.write_all(b"-ERR wrong number of arguments for 'ping' command\r\n");
-    }
-
-    let res = if args.is_empty() {
-        encode(&"PONG", true)
-    } else {
-        encode(&args[0], false)
-    };
-
-    stream.write_all(&res)
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    ReadOnly,
+    Modified,
+    Rejected,
 }
 
-pub fn encode(value: &dyn Any, is_simple: bool) -> Vec<u8> {
-    if let Some(s) = value.downcast_ref::<String>() {
-        return encode_string(s, is_simple);
-    }
-    if let Some(s) = value.downcast_ref::<&str>() {
-        return encode_string(s, is_simple);
-    }
-    if let Some(i) = value.downcast_ref::<i64>() {
-        return format!(":{}\r\n", i).into_bytes();
-    }
-    Vec::new()
+fn reply<S: Write>(stream: &mut S, bytes: &[u8], outcome: Outcome) -> io::Result<Outcome> {
+    stream.write_all(bytes)?;
+    Ok(outcome)
 }
 
-fn encode_string(s: &str, is_simple: bool) -> Vec<u8> {
-    if is_simple {
-        format!("+{}\r\n", s).into_bytes()
-    } else {
-        format!("${}\r\n{}\r\n", s.len(), s).into_bytes()
-    }
+fn error<S: Write>(stream: &mut S, message: &str) -> io::Result<Outcome> {
+    write!(stream, "-{message}\r\n")?;
+    Ok(Outcome::Rejected)
 }
 
-
-// SET, GET  && TTL
-pub fn set_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()>  {
-    // in memory data 
-    // let mut data: HashMap<String, RedisValue> = HashMap::new();
-
-    if args.is_empty() {
-        return Err(Error::new(std::io::ErrorKind::InvalidInput, "is empty"));
-    }
-
-    if args.len() < 2 {
-        return stream.write_all(b"-ERR wrong number of arguments for 'set' command\r\n");
-    }
-    // OLD IMPL 
-    
-    // if let Some(arg) = args.get(2) {
-    //     println!("{:?}", arg);
-    //     let extract_time: u64 = match *&args[3].parse::<u64>() {
-    //         Ok(n) =>  n,
-    //         Err(_) => return Err(Error::new(std::io::ErrorKind::InvalidInput, "ERR value is not an integer or out of range"))
-    //     };
-
-    //     println!("{:?}", extract_time);
-    // }
-
-    let key = &args[0];
-    let value = &args[1];
-
-    let expires_at = match args.get(2) {
-        Some(opt) => {
-            let num: u64 = match args.get(3).and_then(|s| s.parse::<u64>().ok()) {
-                Some(n) => n,
-                None => return stream.write_all(b"-ERR value is not an integer or out of range\r\n")
-            };
-            match opt.to_uppercase().as_str() {
-                "EX" => Some(Instant::now() + Duration::from_secs(num)),
-                "PX" => Some(Instant::now() + Duration::from_millis(num)),
-                _ => return stream.write_all(b"-ERR syntax error\r\n")
-            }
-        }
-
-        None => None,
-    };
-
-    store.insert(key.to_string(), Entry {
-        value: RedisValue::from_string(value.to_string()),
-        expires_at,
-        last_accessed_at: get_current_clock(),
-    });
-
-    stream.write_all(b"+OK\r\n")
+fn arity<S: Write>(stream: &mut S, command: &str) -> io::Result<Outcome> {
+    error(
+        stream,
+        &format!("ERR wrong number of arguments for '{command}' command"),
+    )
 }
 
-pub fn get_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    if args.is_empty() {
-        return stream.write_all(b"-ERR wrong number of arguments for 'get' command\r\n");
-    }
-
-    let key = &args[0];
-
-    let expiration = match store.get(key) {
-        Some(entry) => matches!(entry.expires_at, Some(exp) if Instant::now() >= exp),
-        None => false
-    };
-
-    if expiration {
-        store.remove(key);
-    }
-
-    match store.get_mut(key) {
-        Some(entry) => {
-            entry.last_accessed_at = get_current_clock();
-
-            match &entry.value {
-                     RedisValue::Raw(val) => write_bulk(val, stream),
-                    RedisValue::EmbStr(val) => write_bulk(val, stream),
-                    RedisValue::Int(val) => write_bulk(val.to_string().as_bytes(), stream),
-                    _ => stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
-            }
-        }
-        None => stream.write_all(b"$-1\r\n")
-    }
+pub fn unix_millis() -> io::Result<u64> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    u64::try_from(elapsed.as_millis()).map_err(io::Error::other)
 }
 
-pub fn set_ttl<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    if args.is_empty() {
-        return stream.write_all(b"-ERR wrong number of arguments for 'ttl' command\r\n");
-    }
-
-    // println!("args: {:?}", args);
-
-    let key = &args[0];
-
-    let expired = match store.get(key) {
-        Some(n) => matches!(n.expires_at, Some(m) if Instant::now() >= m),
-        None => false
-    };
-
-    if expired {
-        store.remove(key);
-    }
-
-    let reply: i64 = match store.get(key) {
-        None => -2,
-        Some(entry) => match entry.expires_at {
-            None => -1,
-            Some(exp) => {
-                exp.saturating_duration_since(Instant::now()).as_secs() as i64 
-            }
-        }
-    };
-
-    // println!("{:?}", type_name_of_val(&expired));
-    stream.write_all(format!(":{}\r\n", reply).as_bytes())
-
-
-}
-
-pub fn delete_keys<S: Write>(key_args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    if key_args.is_empty() {
-        return stream.write_all(b"-ERR wrong number of arguments for 'del' command\r\n");
-    }
-    let mut count = 0;
-    // if key exists, delete the key and return the number of keys deleted, only return number of keys deleted regaurdless of how many keys are provided 
-    for key in key_args {
-        if store.contains_key(&key) {
-            store.remove(&key.to_string());
-            count += 1;
-        } else {
-            //
-        }
-    }
-    // if key does not exist, return 0
-
-    stream.write_all(format!(":{}\r\n", count).as_bytes())
-}
-
-pub fn expire_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    if args.is_empty() {
-        return stream.write_all(b"-ERR wrong number of arguments for 'del' command\r\n");
-    }
-
-    if args.len() < 2 {
-        return stream.write_all(b"ERR wrong number of arguments for 'expire' command\r\n");
-    }
-
-    let key = &args[0];
-    // let ttl_in_secs = &args[1];
-
-    let secs = match args[1].parse::<u64>() {
-        Ok(n) => n,
-        Err(_) => return stream.write_all(b"-ERR value is not an integer or out of range\r\n"),
-    };
-
-    // check if key exists in store
-    if !store.contains_key(&key.to_string()) {
-        return stream.write_all(b"ERR key does not exist\r\n");
-    }
-    // if the command is able to set an expiration, it returns 1 (true)
-    match store.get_mut(key) {
-        Some(entry) => {
-            entry.expires_at = Some(Instant::now() + Duration::from_secs(secs));
-            stream.write_all(b":1\r\n")
-        }
-        None => stream.write_all(b":0\r\n"),
-    }
-}
-
-#[cfg(test)]
-mod tests;
-
-fn write_bulk<S: Write>(value: &[u8], stream: &mut S) -> std::io::Result<()> {
+fn write_bulk<S: Write>(value: &[u8], stream: &mut S) -> io::Result<()> {
     write!(stream, "${}\r\n", value.len())?;
     stream.write_all(value)?;
     stream.write_all(b"\r\n")
 }
 
-fn remove_expired(key: &str, store: &mut HashMap<String, Entry>) {
-    if store.get(key).is_some_and(|obj| {
-        obj.expires_at.is_some_and(|deadline| Instant::now() >= deadline)
-    }) {
+fn remove_expired(key: &[u8], store: &mut Store) {
+    if store
+        .get(key)
+        .is_some_and(|obj| obj.expires_at.is_some_and(|end| Instant::now() >= end))
+    {
         store.remove(key);
     }
 }
 
-pub fn incr_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    let now = get_current_clock();
-    if args.len() != 1 {
-        return stream.write_all(b"-ERR wrong number of arguments for 'incr' command\r\n");
+pub fn eval_ping<S: Write>(args: &[Vec<u8>], stream: &mut S) -> io::Result<Outcome> {
+    if args.len() > 1 {
+        return arity(stream, "ping");
     }
-    let key = &args[0];
-    remove_expired(key, store);
-    let obj = store.entry(key.clone()).or_insert(Entry {
-        value: RedisValue::Int(0),
-        expires_at: None,
-        last_accessed_at: now,
-    });
-    if get_type(obj.type_encoding()) != OBJ_TYPE_STRING {
-        return stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+    if let Some(message) = args.first() {
+        write_bulk(message, stream)?;
+        Ok(Outcome::ReadOnly)
+    } else {
+        reply(stream, b"+PONG\r\n", Outcome::ReadOnly)
     }
-    let number = match &obj.value {
-        RedisValue::Int(number) => Some(*number),
-        RedisValue::Raw(bytes) => parse_integer(bytes),
-        RedisValue::EmbStr(bytes) => parse_integer(bytes),
-        _ => unreachable!("string type checked above"),
-    };
-    let Some(number) = number else {
-        return stream.write_all(b"-ERR value is not an integer or out of range\r\n");
-    };
-    let Some(next) = number.checked_add(1) else {
-        return stream.write_all(b"-ERR increment or decrement would overflow\r\n");
-    };
-    // Validate before mutation, and preserve the existing expiration.
-    obj.value = RedisValue::Int(next);
-    obj.last_accessed_at = now;
-    write!(stream, ":{next}\r\n")
 }
 
-pub fn object_command<S: Write>(args: Vec<String>, store: &mut HashMap<String, Entry>, stream: &mut S) -> std::io::Result<()> {
-    if args.len() != 2 || !args[0].eq_ignore_ascii_case("ENCODING") {
-        return stream.write_all(b"-ERR syntax: OBJECT ENCODING key\r\n");
-    }
-    let key = &args[1];
-    remove_expired(key, store);
-    let Some(obj) = store.get(key) else {
-        return stream.write_all(b"$-1\r\n");
-    };
-    if get_type(obj.type_encoding()) != OBJ_TYPE_STRING {
-        return stream.write_all(b"-ERR encoding inspection is only implemented for strings\r\n");
-    }
-    let name: &[u8] = match get_encoding(obj.type_encoding()) {
-        OBJ_ENCODING_RAW => b"raw",
-        OBJ_ENCODING_INT => b"int",
-        OBJ_ENCODING_EMBSTR => b"embstr",
-        _ => unreachable!("known string encoding"),
-    };
-    write_bulk(name, stream)
-}
-
-
-pub fn eval_info<S: Write>(
-    stats: &Stat,
+pub fn set_command<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
     stream: &mut S,
-) -> std::io::Result<()> {
-    let mut info = String::new();
+) -> io::Result<Outcome> {
+    if args.len() < 2 {
+        return arity(stream, "set");
+    }
+    if args.len() != 2 && args.len() != 4 {
+        return error(stream, "ERR syntax error");
+    }
+    let mut expires_at = None;
+    if args.len() == 4 {
+        let option = &args[2];
+        if !option.eq_ignore_ascii_case(b"EX")
+            && !option.eq_ignore_ascii_case(b"PX")
+            && !option.eq_ignore_ascii_case(b"PXAT")
+        {
+            return error(stream, "ERR syntax error");
+        }
+        let Some(value) = parse_integer(&args[3]) else {
+            return error(stream, "ERR value is not an integer or out of range");
+        };
+        if value <= 0 {
+            return error(stream, "ERR invalid expire time in 'set' command");
+        }
+        let now_ms = unix_millis()?;
+        let delta = if option.eq_ignore_ascii_case(b"EX") {
+            (value as u64).checked_mul(1000)
+        } else if option.eq_ignore_ascii_case(b"PXAT") {
+            Some((value as u64).saturating_sub(now_ms))
+        } else {
+            Some(value as u64)
+        };
+        let deadline = delta
+            .filter(|ms| {
+                now_ms
+                    .checked_add(*ms)
+                    .is_some_and(|end| end <= i64::MAX as u64)
+            })
+            .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)));
+        let Some(deadline) = deadline else {
+            return error(stream, "ERR invalid expire time in 'set' command");
+        };
+        expires_at = Some(deadline);
+    }
+    store.insert(
+        args[0].clone(),
+        Entry {
+            value: RedisValue::from_bytes(args[1].clone()),
+            expires_at,
+            last_accessed_at: get_current_clock(),
+        },
+    );
+    reply(stream, b"+OK\r\n", Outcome::Modified)
+}
 
-    info.push_str("# Keyspace\r\n");
-
-    for (i, stat) in stats.keyspace_stat.iter().enumerate() {
-        if let Some(keys) = stat.get("keys") {
-            info.push_str(
-                &format!(
-                    "db{}:keys={},expires=0,avg_ttl=0\r\n",
-                    i, keys
-                )
+pub fn get_command<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() != 1 {
+        return arity(stream, "get");
+    }
+    remove_expired(&args[0], store);
+    let Some(entry) = store.get_mut(&args[0]) else {
+        return reply(stream, b"$-1\r\n", Outcome::ReadOnly);
+    };
+    entry.last_accessed_at = get_current_clock();
+    match &entry.value {
+        RedisValue::Raw(bytes) => write_bulk(bytes, stream)?,
+        RedisValue::EmbStr(bytes) => write_bulk(bytes, stream)?,
+        RedisValue::Int(number) => write_bulk(number.to_string().as_bytes(), stream)?,
+        _ => {
+            return error(
+                stream,
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
             );
         }
     }
-
-    stream.write_all(info.as_bytes())
+    Ok(Outcome::ReadOnly)
 }
+
+pub fn set_ttl<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() != 1 {
+        return arity(stream, "ttl");
+    }
+    remove_expired(&args[0], store);
+    let ttl = match store.get(&args[0]) {
+        None => -2,
+        Some(entry) => match entry.expires_at {
+            None => -1,
+            Some(end) => {
+                ((end.saturating_duration_since(Instant::now()).as_millis() + 500) / 1000) as i64
+            }
+        },
+    };
+    write!(stream, ":{ttl}\r\n")?;
+    Ok(Outcome::ReadOnly)
+}
+
+pub fn delete_keys<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.is_empty() {
+        return arity(stream, "del");
+    }
+    let mut deleted = 0;
+    for key in args {
+        remove_expired(key, store);
+        if store.remove(key).is_some() {
+            deleted += 1;
+        }
+    }
+    write!(stream, ":{deleted}\r\n")?;
+    Ok(Outcome::Modified)
+}
+
+pub fn expire_command<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() != 2 {
+        return arity(stream, "expire");
+    }
+    let Some(seconds) = parse_integer(&args[1]) else {
+        return error(stream, "ERR value is not an integer or out of range");
+    };
+    let deadline = if seconds > 0 {
+        let now_ms = unix_millis()?;
+        let checked = (seconds as u64)
+            .checked_mul(1000)
+            .filter(|ms| {
+                now_ms
+                    .checked_add(*ms)
+                    .is_some_and(|end| end <= i64::MAX as u64)
+            })
+            .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)));
+        let Some(deadline) = checked else {
+            return error(stream, "ERR invalid expire time in 'expire' command");
+        };
+        Some(deadline)
+    } else {
+        None
+    };
+    remove_expired(&args[0], store);
+    let Some(entry) = store.get_mut(&args[0]) else {
+        return reply(stream, b":0\r\n", Outcome::ReadOnly);
+    };
+    if let Some(deadline) = deadline {
+        entry.expires_at = Some(deadline);
+    } else {
+        store.remove(&args[0]);
+    }
+    reply(stream, b":1\r\n", Outcome::Modified)
+}
+
+pub fn incr_command<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() != 1 {
+        return arity(stream, "incr");
+    }
+    let key = &args[0];
+    remove_expired(key, store);
+    let number = match store.get(key).map(|entry| &entry.value) {
+        None => Some(0),
+        Some(RedisValue::Int(number)) => Some(*number),
+        Some(RedisValue::Raw(bytes)) => parse_integer(bytes),
+        Some(RedisValue::EmbStr(bytes)) => parse_integer(bytes),
+        _ => {
+            return error(
+                stream,
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            );
+        }
+    };
+    let Some(number) = number else {
+        return error(stream, "ERR value is not an integer or out of range");
+    };
+    let Some(next) = number.checked_add(1) else {
+        return error(stream, "ERR increment or decrement would overflow");
+    };
+    let entry = store.entry(key.clone()).or_insert(Entry {
+        value: RedisValue::Int(next),
+        expires_at: None,
+        last_accessed_at: get_current_clock(),
+    });
+    entry.value = RedisValue::Int(next);
+    entry.last_accessed_at = get_current_clock();
+    write!(stream, ":{next}\r\n")?;
+    Ok(Outcome::Modified)
+}
+
+pub fn object_command<S: Write>(
+    args: &[Vec<u8>],
+    store: &mut Store,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() != 2 || !args[0].eq_ignore_ascii_case(b"ENCODING") {
+        return error(stream, "ERR syntax: OBJECT ENCODING key");
+    }
+    remove_expired(&args[1], store);
+    let Some(entry) = store.get(&args[1]) else {
+        return reply(stream, b"$-1\r\n", Outcome::ReadOnly);
+    };
+    if get_type(entry.type_encoding()) != OBJ_TYPE_STRING {
+        return error(
+            stream,
+            "ERR encoding inspection is only implemented for strings",
+        );
+    }
+    let name: &[u8] = match get_encoding(entry.type_encoding()) {
+        OBJ_ENCODING_RAW => b"raw",
+        OBJ_ENCODING_INT => b"int",
+        OBJ_ENCODING_EMBSTR => b"embstr",
+        _ => unreachable!(),
+    };
+    write_bulk(name, stream)?;
+    Ok(Outcome::ReadOnly)
+}
+
+pub fn eval_info<S: Write>(
+    args: &[Vec<u8>],
+    store: &Store,
+    stats: &mut Stat,
+    stream: &mut S,
+) -> io::Result<Outcome> {
+    if args.len() > 1
+        || args
+            .first()
+            .is_some_and(|arg| !arg.eq_ignore_ascii_case(b"KEYSPACE"))
+    {
+        return error(stream, "ERR supported INFO section: keyspace");
+    }
+    let now = Instant::now();
+    let (mut keys, mut expires, mut ttl_ms) = (0, 0, 0u128);
+    for entry in store.values() {
+        match entry.expires_at {
+            Some(end) if end <= now => continue,
+            Some(end) => {
+                expires += 1;
+                ttl_ms += end.duration_since(now).as_millis();
+            }
+            None => {}
+        }
+        keys += 1;
+    }
+    stats.update_stat_db(0, "keys".into(), keys);
+    stats.update_stat_db(0, "expires".into(), expires);
+    let mut info = String::from("# Keyspace\r\n");
+    if keys > 0 {
+        let average = if expires == 0 {
+            0
+        } else {
+            ttl_ms / expires as u128
+        };
+        info.push_str(&format!(
+            "db0:keys={keys},expires={expires},avg_ttl={average}\r\n"
+        ));
+    }
+    write_bulk(info.as_bytes(), stream)?;
+    Ok(Outcome::ReadOnly)
+}
+
+#[cfg(test)]
+mod tests;
