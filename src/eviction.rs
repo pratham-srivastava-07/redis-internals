@@ -19,10 +19,6 @@ pub fn get_current_clock() -> u32 {
     (seconds & u64::from(LRU_CLOCK_MAX)) as u32
 }
 
-pub fn get_idle_time(last_accessed_at: u32) -> u32 {
-    idle_time_at(last_accessed_at, get_current_clock())
-}
-
 fn idle_time_at(last_accessed_at: u32, current: u32) -> u32 {
     current.wrapping_sub(last_accessed_at) & LRU_CLOCK_MAX
 }
@@ -52,11 +48,11 @@ pub fn evict_keys(store: &mut Store) {
             let idx = rng.gen_range(0..candidates.len());
             let key = candidates.swap_remove(idx);
 
-            if let Some(entry) = store.get(&key) {
-                if matches!(entry.expires_at, Some(exp) if now >= exp) {
-                    store.remove(&key);
-                    expired += 1;
-                }
+            if let Some(entry) = store.get(&key)
+                && matches!(entry.expires_at, Some(exp) if now >= exp)
+            {
+                store.remove(&key);
+                expired += 1;
             }
         }
 

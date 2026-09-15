@@ -1,7 +1,14 @@
 [package]
-name = "redis-internals"
+name = "vynk"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A Redis implementation with extra cache features, written from scratch in Rust"
+repository = "https://github.com/pratham-srivastava-07/vynk"
+readme = "CRATE_README.md"
+keywords = ["redis", "cache", "key-value", "tinylfu", "server"]
+categories = ["caching", "database-implementations", "command-line-utilities"]
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/CRATE_README.md", "/LICENSE"]
 
 [dependencies]
 mio = { version = "1.2.1", features = ["os-poll", "net"] }

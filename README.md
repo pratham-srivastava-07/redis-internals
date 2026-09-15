@@ -1,6 +1,8 @@
-# redis-internals
+# Vynk
 
-A Redis-style in-memory key-value server built from scratch in Rust: TCP event handling, RESP, string storage, expiry, approximate LRU eviction, append-only persistence, and TinyLFU-style cache admission. It implements a subset of Redis commands plus `CACHE.PUT` and `CACHE.STATS` extensions.
+**The Redis idea, rewritten.**
+
+Vynk is a Redis implementation with extra features, written from scratch in Rust. It includes TCP event handling, RESP, string storage, expiry, approximate LRU eviction, append-only persistence, and TinyLFU-style cache admission. It implements a subset of Redis commands plus `CACHE.PUT` and `CACHE.STATS` extensions.
 
 This is not a wrapper around an existing Redis client library. Every layer — the network event loop, the protocol parser, the command dispatcher, the storage engine, and the persistence format — is implemented directly.
 
@@ -40,7 +42,18 @@ It is compatible enough with the real Redis wire protocol that it can be driven 
 
 Requires a Rust toolchain supporting edition 2024 (install via [rustup.rs](https://rustup.rs) if needed). Install `redis-cli` separately to use the examples.
 
+Install the published crate:
+
 ```sh
+cargo install vynk --locked
+vynk
+```
+
+Or run it from source:
+
+```sh
+git clone https://github.com/pratham-srivastava-07/vynk.git
+cd vynk
 cargo run
 ```
 
@@ -265,7 +278,7 @@ Tests exist at two levels:
 
 Keep port 7379 free. Integration tests serialize their isolated server processes and use temporary directories for persistence; they do not use the repository's AOF. Coverage also includes binary data across restart, expiry during downtime, rejected writes, concurrent increments, slow readers, half-closed sockets, truncated AOF recovery, and eviction replay. A unit test forces partial writes followed by `WouldBlock` to check output resumption.
 
-Verified on Windows on 2026-09-14: **23 unit tests and 54 integration tests pass in both debug and release**, with no failures or ignored tests. Admission tests cover scan rejection, repeated misses, aging, ties, overwrite validation, expired capacity, binary data, unchanged AOF on rejection, and persisted replacement. These checks cover the implemented subset, not full Redis compatibility.
+Verified on Windows on 2026-09-15: **23 unit tests and 54 integration tests pass in both debug and release**, with no failures or ignored tests. Admission tests cover scan rejection, repeated misses, aging, ties, overwrite validation, expired capacity, binary data, unchanged AOF on rejection, and persisted replacement. These checks cover the implemented subset, not full Redis compatibility.
 
 ## Known limitations
 

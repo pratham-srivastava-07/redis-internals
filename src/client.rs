@@ -8,15 +8,15 @@ pub fn _handle_client(stream: TcpStream) -> std::io::Result<()> {
 
     loop {
         line.clear();
-        let bytes_read = reader.read_line(&mut line)?;  // reads until '\n'
+        let bytes_read = reader.read_line(&mut line)?; // reads until '\n'
 
         if bytes_read == 0 {
             return Ok(()); // client disconnected
         }
 
-        let msg = line.trim_end();          // strip the \r\n
+        let msg = line.trim_end(); // strip the \r\n
         println!("Received full line: {}", msg);
-        stream.write_all(&format!("+{}\r\n", msg).as_bytes())?;
+        stream.write_all(format!("+{}\r\n", msg).as_bytes())?;
         // stream.try_clone()
     }
 }

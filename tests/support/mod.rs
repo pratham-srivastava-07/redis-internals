@@ -172,7 +172,7 @@ impl Server {
             .append(true)
             .open(self.directory.join("stderr.log"))
             .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_redis-internals"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vynk"));
         command
             .current_dir(&self.directory)
             .stdout(Stdio::null())
@@ -227,15 +227,15 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop();
-        if std::thread::panicking() {
-            if let Ok(log) = fs::read_to_string(self.directory.join("stderr.log")) {
-                eprintln!("server stderr:\n{log}");
-            }
+        if std::thread::panicking()
+            && let Ok(log) = fs::read_to_string(self.directory.join("stderr.log"))
+        {
+            eprintln!("server stderr:\n{log}");
         }
-        if let Ok(target) = self.directory.canonicalize() {
-            if target.parent() == Some(self.temp_root.as_path()) {
-                let _ = fs::remove_dir_all(target);
-            }
+        if let Ok(target) = self.directory.canonicalize()
+            && target.parent() == Some(self.temp_root.as_path())
+        {
+            let _ = fs::remove_dir_all(target);
         }
     }
 }

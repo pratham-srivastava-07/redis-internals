@@ -15,6 +15,7 @@ pub enum ObjValue {
     Int(i64),
     // Models the encoding, not Redis's single object + string allocation.
     EmbStr(Box<[u8]>),
+    #[allow(dead_code)]
     _List(Vec<String>),
     _Set(HashSet<String>),
     _Hash(HashMap<String, String>),
